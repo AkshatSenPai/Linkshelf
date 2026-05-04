@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Readability } from "@mozilla/readability";
 import DOMPurify from "dompurify";
@@ -57,6 +57,7 @@ async function fetchMetadata(url, platform) {
 }
 
 const STORAGE_KEY = "linkshelf_v1";
+const SYNC_KEY = "linkshelf_sync";
 
 function useLocalStorage(key, initialValue) {
   const [storedValue, setStoredValue] = useState(() => {
@@ -73,14 +74,7 @@ function useLocalStorage(key, initialValue) {
       return initialValue;
     } catch (error) { return initialValue; }
   });
-  const setValue = (value) => {
-    try {
-      const valueToStore = value instanceof Function ? value(storedValue) : value;
-      setStoredValue(valueToStore);
-      window.localStorage.setItem(key, JSON.stringify(valueToStore));
-    } catch (error) {}
-  };
-  return [storedValue, setValue];
+  return [storedValue, setStoredValue];
 }
 
 const Icon = ({ name, size = 16 }) => {
@@ -104,7 +98,9 @@ const Icon = ({ name, size = 16 }) => {
     star: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>,
     starFilled: <svg width={size} height={size} viewBox="0 0 24 24" fill="#f1c40f" stroke="#f1c40f" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>,
     restore: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>,
-    sort: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="8" y1="12" x2="20" y2="12"></line><line x1="12" y1="18" x2="20" y2="18"></line></svg>
+    sort: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="8" y1="12" x2="20" y2="12"></line><line x1="12" y1="18" x2="20" y2="18"></line></svg>,
+    cloud: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>,
+    cloudCheck: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path d="M9 13l2 2 4-4"/></svg>
   };
   return icons[name] || null;
 };
@@ -116,7 +112,7 @@ export default function Linkshelf() {
   const [activeTab, setActiveTab] = useState("all");
   const [activeTags, setActiveTags] = useState([]);
   const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState("newest"); // newest, oldest, az, za
+  const [sortBy, setSortBy] = useState("newest");
   const [inputUrl, setInputUrl] = useState("");
   
   const [drawer, setDrawer] = useState(null); 
@@ -131,6 +127,15 @@ export default function Linkshelf() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkTagDrawer, setBulkTagDrawer] = useState(false);
   
+  // Cloud Sync State
+  const [syncDrawer, setSyncDrawer] = useState(false);
+  const [syncConfig, setSyncConfig] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || { token: "", gistId: "" }; } catch(e) { return { token: "", gistId: "" }; }
+  });
+  const [syncInput, setSyncInput] = useState(syncConfig.token);
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle, syncing, success, error
+  const syncTimeoutRef = useRef(null);
+
   const [toasts, setToasts] = useState([]);
   const inputRef = useRef();
   const fileInputRef = useRef();
@@ -155,13 +160,107 @@ export default function Linkshelf() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); inputRef.current?.focus(); }
-      if (e.key === "Escape") { setDrawer(null); setVideoModal(null); setReaderModal(null); setIsSelecting(false); }
+      if (e.key === "Escape") { setDrawer(null); setVideoModal(null); setReaderModal(null); setIsSelecting(false); setSyncDrawer(false); }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const persist = (updates) => setData(d => ({ ...d, ...updates }));
+  // --- CLOUD SYNC LOGIC ---
+  const triggerCloudSave = useCallback((newData, currentConfig) => {
+    if (!currentConfig.token || !currentConfig.gistId) return;
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    
+    syncTimeoutRef.current = setTimeout(async () => {
+      setSyncStatus("syncing");
+      try {
+        const res = await fetch(`https://api.github.com/gists/${currentConfig.gistId}`, {
+          method: "PATCH",
+          headers: { "Authorization": `token ${currentConfig.token}`, "Accept": "application/vnd.github.v3+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ files: { "linkshelf_data.json": { content: JSON.stringify(newData) } } })
+        });
+        if (res.ok) setSyncStatus("success"); else setSyncStatus("error");
+      } catch (e) { setSyncStatus("error"); }
+      setTimeout(() => setSyncStatus("idle"), 3000);
+    }, 2000);
+  }, []);
+
+  // Initial Load from Cloud
+  useEffect(() => {
+    const loadFromCloud = async () => {
+      if (!syncConfig.token || !syncConfig.gistId) return;
+      setSyncStatus("syncing");
+      try {
+        const res = await fetch(`https://api.github.com/gists/${syncConfig.gistId}`, { headers: { "Authorization": `token ${syncConfig.token}` } });
+        if (res.ok) {
+          const gist = await res.json();
+          if (gist.files["linkshelf_data.json"]) {
+            const cloudData = JSON.parse(gist.files["linkshelf_data.json"].content);
+            setData(cloudData); window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
+            addToast("Synced from cloud!");
+            setSyncStatus("success");
+          }
+        }
+      } catch(e) { setSyncStatus("error"); }
+      setTimeout(() => setSyncStatus("idle"), 3000);
+    };
+    loadFromCloud();
+  }, []);
+
+  const handleConnectSync = async () => {
+    if (!syncInput.trim()) {
+      localStorage.removeItem(SYNC_KEY); setSyncConfig({ token: "", gistId: "" }); addToast("Cloud Sync disabled."); setSyncDrawer(false); return;
+    }
+    setSyncStatus("syncing");
+    try {
+      // Find existing gist
+      let res = await fetch("https://api.github.com/gists", { headers: { "Authorization": `token ${syncInput.trim()}` } });
+      if (!res.ok) throw new Error("Invalid token");
+      const gists = await res.json();
+      const existing = gists.find(g => g.files["linkshelf_data.json"]);
+
+      let newConfig = { token: syncInput.trim(), gistId: "" };
+      if (existing) {
+        newConfig.gistId = existing.id;
+        // Merge cloud data to local immediately
+        const gistRes = await fetch(`https://api.github.com/gists/${existing.id}`, { headers: { "Authorization": `token ${newConfig.token}` } });
+        const gistData = await gistRes.json();
+        const cloudData = JSON.parse(gistData.files["linkshelf_data.json"].content);
+        setData(cloudData); window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
+        addToast("Connected! Restored from cloud.");
+      } else {
+        // Create new gist with current local data
+        const createRes = await fetch("https://api.github.com/gists", {
+          method: "POST",
+          headers: { "Authorization": `token ${newConfig.token}`, "Accept": "application/vnd.github.v3+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ description: "Linkshelf Cloud Sync Data", public: false, files: { "linkshelf_data.json": { content: JSON.stringify(data) } } })
+        });
+        const created = await createRes.json();
+        newConfig.gistId = created.id;
+        addToast("Connected! Backed up to cloud.");
+      }
+      
+      localStorage.setItem(SYNC_KEY, JSON.stringify(newConfig));
+      setSyncConfig(newConfig);
+      setSyncStatus("success");
+      setTimeout(() => { setSyncStatus("idle"); setSyncDrawer(false); }, 1500);
+    } catch (e) {
+      addToast("Failed to connect. Check token.", "error");
+      setSyncStatus("error");
+    }
+  };
+
+  const persist = (updates) => {
+    setData(d => {
+      const newFullData = { ...d, ...updates };
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(newFullData));
+      triggerCloudSave(newFullData, syncConfig);
+      return newFullData;
+    });
+  };
+
+  // -------------------------
+
   const toggleTheme = () => persist({ theme: isDark ? "light" : "dark" });
 
   const handleExport = () => {
@@ -180,7 +279,7 @@ export default function Linkshelf() {
     reader.onload = (event) => {
       try {
         const parsed = JSON.parse(event.target.result);
-        if (parsed.links && parsed.categories) { setData({ ...parsed, theme: data.theme }); addToast("Backup imported successfully!"); }
+        if (parsed.links && parsed.categories) { persist(parsed); addToast("Backup imported successfully!"); }
       } catch (err) { addToast("Failed to read file.", "error"); }
     };
     reader.readAsText(file); e.target.value = null;
@@ -316,6 +415,14 @@ export default function Linkshelf() {
               </select>
             </div>
             <div className="header-divider" style={{ width: 1, height: 16, background: th.border, margin: "auto 8px" }}></div>
+            
+            <button onClick={() => setSyncDrawer(true)} title="Cloud Sync" style={{ background: "none", border: "none", color: syncConfig.token ? "#D4924A" : th.textMuted, cursor: "pointer", display: "flex", alignItems: "center", position: "relative" }}>
+              <Icon name={syncConfig.token ? "cloudCheck" : "cloud"} size={16} />
+              {syncStatus === "syncing" && <span style={{ position: "absolute", top: -2, right: -4, width: 6, height: 6, background: "#3498db", borderRadius: "50%", animation: "pulse 1s infinite" }} />}
+              {syncStatus === "error" && <span style={{ position: "absolute", top: -2, right: -4, width: 6, height: 6, background: th.danger, borderRadius: "50%" }} />}
+            </button>
+            <style>{`@keyframes pulse { 0% { transform: scale(0.8); opacity: 0.5; } 50% { transform: scale(1.2); opacity: 1; } 100% { transform: scale(0.8); opacity: 0.5; } }`}</style>
+
             <button onClick={() => { setIsSelecting(!isSelecting); setSelectedIds(new Set()); }} title="Bulk Select" style={{ background: isSelecting ? th.text : "none", borderRadius: 8, padding: 6, border: "none", color: isSelecting ? th.bg : th.textMuted, cursor: "pointer", display: "flex", alignItems: "center" }}>
               <Icon name="grid" size={16} />
             </button>
@@ -443,20 +550,52 @@ export default function Linkshelf() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {(drawer || bulkTagDrawer) && (
+        {(drawer || bulkTagDrawer || syncDrawer) && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
-            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => !drawer?.loading && setDrawer(null) && setBulkTagDrawer(false)}>
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => { if (!drawer?.loading && syncStatus !== "syncing") { setDrawer(null); setBulkTagDrawer(false); setSyncDrawer(false); } }}>
             <motion.div className="mobile-drawer-content" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 25, stiffness: 200 }}
-              onClick={e => e.stopPropagation()} style={{ background: th.bg, borderRadius: "20px 20px 0 0", borderTop: `1px solid ${th.border}`, width: "100%", maxWidth: 560, padding: "2rem", boxSizing: "border-box" }}>
+              onClick={e => e.stopPropagation()} style={{ background: th.bg, borderRadius: "20px 20px 0 0", borderTop: `1px solid ${th.border}`, width: "100%", maxWidth: 560, padding: "2rem", boxSizing: "border-box", maxHeight: "90vh", overflowY: "auto" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
                 <div>
-                  <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 20, textTransform: "uppercase", color: th.text }}>{bulkTagDrawer ? `Edit Tags (${selectedIds.size})` : (drawer?.editingId ? "Edit Link" : "Confirm & Save")}</div>
+                  <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 20, textTransform: "uppercase", color: th.text }}>{syncDrawer ? "Cloud Sync" : (bulkTagDrawer ? `Edit Tags (${selectedIds.size})` : (drawer?.editingId ? "Edit Link" : "Confirm & Save"))}</div>
                 </div>
-                <button onClick={() => { setDrawer(null); setBulkTagDrawer(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: th.textMuted }}><Icon name="x" size={20} /></button>
+                <button onClick={() => { setDrawer(null); setBulkTagDrawer(false); setSyncDrawer(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: th.textMuted }}><Icon name="x" size={20} /></button>
               </div>
-              {drawer?.loading ? (
+              
+              {/* CLOUD SYNC DRAWER CONTENT */}
+              {syncDrawer && (
+                <div>
+                  <p style={{ fontSize: 13, color: th.textMuted, marginBottom: 16, lineHeight: 1.5 }}>
+                    Securely sync your links across PC and Phone for free using a private <b>GitHub Gist</b>.
+                  </p>
+                  
+                  <div style={{ background: th.cardBg, border: `1px solid ${th.border}`, padding: 16, borderRadius: 12, marginBottom: 20 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: th.text, marginBottom: 8 }}>1. Generate a GitHub Token</div>
+                    <div style={{ fontSize: 12, color: th.textMuted, lineHeight: 1.5 }}>
+                      Go to GitHub Settings &rarr; Developer Settings &rarr; Personal access tokens (Classic). Generate a new token and select <b>ONLY</b> the <code>gist</code> checkbox.
+                    </div>
+                  </div>
+
+                  <div style={{ fontSize: 13, fontWeight: 600, color: th.text, marginBottom: 8 }}>2. Paste Token Here (on both devices)</div>
+                  <input type="password" value={syncInput} onChange={e => setSyncInput(e.target.value)} placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${th.inputBorder}`, background: th.inputBg, color: th.inputText, fontSize: 14, outline: "none", fontFamily: "'DM Sans', sans-serif", marginBottom: 16, boxSizing: "border-box" }} />
+                  
+                  <button onClick={handleConnectSync} disabled={syncStatus === "syncing"} style={{ width: "100%", padding: "13px", background: th.btnBg, color: th.btnText, border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: syncStatus === "syncing" ? "not-allowed" : "pointer", display: "flex", justifyContent: "center", alignItems: "center", gap: 8, opacity: syncStatus === "syncing" ? 0.7 : 1 }}>
+                    {syncStatus === "syncing" ? <Icon name="loader" size={16} /> : <Icon name={syncInput ? "cloud" : "x"} size={16} />}
+                    {syncStatus === "syncing" ? "Connecting..." : (syncInput ? "Connect & Sync" : "Disable Sync")}
+                  </button>
+                  
+                  {syncConfig.gistId && (
+                    <div style={{ marginTop: 16, fontSize: 11, color: th.textMuted, textAlign: "center" }}>
+                      Connected to Gist ID: <code>{syncConfig.gistId.slice(0,8)}...</code>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* NORMAL EDIT DRAWER CONTENT */}
+              {!syncDrawer && drawer?.loading ? (
                 <div style={{ textAlign: "center", padding: "2rem 0", color: th.textMuted }}><Icon name="loader" size={28} /></div>
-              ) : (
+              ) : (!syncDrawer && (
                 <>
                   {!bulkTagDrawer && (
                     <>
@@ -480,7 +619,7 @@ export default function Linkshelf() {
                   {addingCustom && <input value={customCat} onChange={e => setCustomCat(e.target.value)} placeholder="e.g. AI, Startup..." autoFocus style={{ width: "100%", padding: "9px 12px", borderRadius: 8, marginTop: 10, border: "1.5px solid #D4924A", background: th.cardBg, color: th.text, fontSize: 13, outline: "none", boxSizing: "border-box" }} />}
                   <button onClick={bulkTagDrawer ? handleBulkTagSave : handleSave} style={{ marginTop: 20, width: "100%", padding: "13px", background: th.btnBg, color: th.btnText, border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{bulkTagDrawer ? "Apply Tags" : "Save"}</button>
                 </>
-              )}
+              ))}
             </motion.div>
           </motion.div>
         )}

@@ -6,3 +6,78 @@ body, html {
   margin: 0;
   padding: 0;
 }
+
+/* Hide scrollbar for horizontal scrolling elements but keep functionality */
+.scroll-hide::-webkit-scrollbar {
+  display: none;
+}
+.scroll-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 640px) {
+  .mobile-header {
+    padding: 0 1rem !important;
+  }
+  .mobile-header .brand-text {
+    font-size: 22px !important;
+  }
+  .mobile-header .subtitle {
+    display: none !important;
+  }
+  .mobile-header .link-count {
+    display: none !important;
+  }
+  .mobile-header .header-divider {
+    display: none !important;
+  }
+  .mobile-header .header-icons {
+    gap: 4px !important;
+  }
+
+  .mobile-input-area {
+    padding: 1rem !important;
+  }
+  .mobile-tabs-container {
+    padding: 0 1rem !important;
+  }
+  .mobile-filters-container {
+    padding: 1rem 1rem 0 !important;
+  }
+  .mobile-main {
+    padding: 1.5rem 1rem 4rem !important;
+  }
+
+  .mobile-drawer-content {
+    padding: 1.5rem 1.2rem !important;
+  }
+  .mobile-bulk-bar {
+    width: 90% !important;
+    gap: 8px !important;
+    padding: 10px 15px !important;
+    font-size: 13px !important;
+  }
+  .mobile-bulk-bar span {
+    font-size: 13px !important;
+  }
+  .mobile-bulk-bar button {
+    font-size: 12px !important;
+  }
+
+  .mobile-reader-modal {
+    padding: 3rem 1rem 1rem !important;
+  }
+  .mobile-reader-content {
+    padding: 2rem 1.5rem !important;
+  }
+  .mobile-reader-content h1 {
+    font-size: 28px !important;
+  }
+
+  /* Make sure link cards don't shrink too much */
+  .grid-container {
+    grid-template-columns: 1fr !important;
+  }
+}

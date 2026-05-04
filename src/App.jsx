@@ -296,16 +296,16 @@ export default function Linkshelf() {
       <link href="https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
 
       {/* ── HEADER ── */}
-      <header style={{
+      <header className="mobile-header" style={{
         background: th.header, padding: "0 2rem", display: "flex", alignItems: "center", justifyContent: "space-between",
         height: 64, position: "sticky", top: 0, zIndex: 100, borderBottom: `1px solid ${th.borderLight}`, transition: "background 0.3s ease"
       }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: th.headerBrand, letterSpacing: 1, textTransform: "uppercase" }}>Linkshelf</span>
-          <span style={{ fontSize: 12, color: th.textMuted, fontWeight: 500 }}>personal curator</span>
+          <span className="brand-text" style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: th.headerBrand, letterSpacing: 1, textTransform: "uppercase" }}>Linkshelf</span>
+          <span className="subtitle" style={{ fontSize: 12, color: th.textMuted, fontWeight: 500 }}>personal curator</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="header-icons" style={{ display: "flex", gap: 8 }}>
             <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
               <Icon name="sort" size={14} />
               <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ appearance: "none", background: "none", border: "none", color: th.textMuted, fontSize: 13, outline: "none", paddingLeft: 6, cursor: "pointer", fontWeight: 500 }}>
@@ -315,7 +315,7 @@ export default function Linkshelf() {
                 <option value="za">Z to A</option>
               </select>
             </div>
-            <div style={{ width: 1, height: 16, background: th.border, margin: "auto 8px" }}></div>
+            <div className="header-divider" style={{ width: 1, height: 16, background: th.border, margin: "auto 8px" }}></div>
             <button onClick={() => { setIsSelecting(!isSelecting); setSelectedIds(new Set()); }} title="Bulk Select" style={{ background: isSelecting ? th.text : "none", borderRadius: 8, padding: 6, border: "none", color: isSelecting ? th.bg : th.textMuted, cursor: "pointer", display: "flex", alignItems: "center" }}>
               <Icon name="grid" size={16} />
             </button>
@@ -334,7 +334,7 @@ export default function Linkshelf() {
       </header>
 
       {/* ── INPUT BAR ── */}
-      <div style={{ background: th.inputArea, padding: "1.5rem 2rem", transition: "background 0.3s ease" }}>
+      <div className="mobile-input-area" style={{ background: th.inputArea, padding: "1.5rem 2rem", transition: "background 0.3s ease" }}>
         <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", gap: 10 }}>
           <input
             ref={inputRef} value={inputUrl} onChange={e => setInputUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handlePaste(inputUrl)}
@@ -350,8 +350,8 @@ export default function Linkshelf() {
       </div>
 
       {/* ── TABS ── */}
-      <div style={{ background: th.bg, borderBottom: `1.5px solid ${th.border}`, padding: "0 2rem" }}>
-        <div style={{ maxWidth: 960, margin: "0 auto", display: "flex", gap: 0, overflowX: "auto" }}>
+      <div className="mobile-tabs-container" style={{ background: th.bg, borderBottom: `1.5px solid ${th.border}`, padding: "0 2rem" }}>
+        <div className="scroll-hide" style={{ maxWidth: 960, margin: "0 auto", display: "flex", gap: 0, overflowX: "auto" }}>
           {[["all", "All"], ["youtube", "YouTube"], ["instagram", "Instagram"], ["x", "X / Twitter"], ["trash", "Trash"]].map(([key, label]) => (
             <button key={key} onClick={() => { setActiveTab(key); setActiveTags([]); }}
               style={{
@@ -366,9 +366,9 @@ export default function Linkshelf() {
         </div>
       </div>
 
-      {/* ── FILTERS (Hidden in Trash) ── */}
+      {/* ── FILTERS ── */}
       {activeTab !== "trash" && (
-        <div style={{ maxWidth: 960, margin: "0 auto", padding: "1rem 2rem 0" }}>
+        <div className="mobile-filters-container" style={{ maxWidth: 960, margin: "0 auto", padding: "1rem 2rem 0" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ position: "relative", marginRight: 4 }}>
               <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: th.textMuted }}><Icon name="search" size={14} /></span>
@@ -395,14 +395,14 @@ export default function Linkshelf() {
       )}
 
       {/* ── GRID ── */}
-      <main style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 2rem 4rem" }}>
+      <main className="mobile-main" style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 2rem 4rem" }}>
         {processed.length === 0 ? (
           <div style={{ textAlign: "center", padding: "5rem 0", color: th.textMuted }}>
             <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 32, textTransform: "uppercase", color: th.emptyText, marginBottom: 8 }}>{activeTab === "trash" ? "Trash is empty" : "Empty shelf"}</div>
             <div style={{ fontSize: 14 }}>{activeTab === "trash" ? "Deleted items appear here" : "Paste a link above to start curating"}</div>
           </div>
         ) : (
-          <motion.div layout style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
+          <motion.div layout className="grid-container" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
             <AnimatePresence>
               {processed.map(link => (
                 <LinkCard 
@@ -422,7 +422,7 @@ export default function Linkshelf() {
       {/* ── BULK ACTION BAR ── */}
       <AnimatePresence>
         {isSelecting && (
-          <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
+          <motion.div className="mobile-bulk-bar" initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
             style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 150, background: th.cardBg, border: `1.5px solid ${th.text}`, borderRadius: 99, padding: "10px 20px", boxShadow: "0 10px 30px rgba(0,0,0,0.2)", display: "flex", alignItems: "center", gap: 16 }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: th.text }}>{selectedIds.size} selected</span>
             <div style={{ width: 1, height: 20, background: th.border }}></div>
@@ -442,12 +442,11 @@ export default function Linkshelf() {
         )}
       </AnimatePresence>
 
-      {/* ── MODALS (Drawer, Video, Reader, Toasts remain unchanged in functionality) ── */}
       <AnimatePresence>
         {(drawer || bulkTagDrawer) && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
             style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => !drawer?.loading && setDrawer(null) && setBulkTagDrawer(false)}>
-            <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 25, stiffness: 200 }}
+            <motion.div className="mobile-drawer-content" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 25, stiffness: 200 }}
               onClick={e => e.stopPropagation()} style={{ background: th.bg, borderRadius: "20px 20px 0 0", borderTop: `1px solid ${th.border}`, width: "100%", maxWidth: 560, padding: "2rem", boxSizing: "border-box" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
                 <div>
@@ -496,7 +495,27 @@ export default function Linkshelf() {
         )}
       </AnimatePresence>
 
-      <div style={{ position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", zIndex: 400, display: "flex", flexDirection: "column", gap: 8 }}>
+      <AnimatePresence>
+        {readerModal && (
+          <motion.div className="mobile-reader-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: "fixed", inset: 0, background: th.bg, zIndex: 300, overflowY: "auto", padding: "4rem 2rem" }}>
+            <div style={{ position: "fixed", top: 20, right: 20, zIndex: 310 }}><button onClick={() => setReaderModal(null)} style={{ background: th.cardBg, border: `1px solid ${th.border}`, borderRadius: "50%", padding: 10, cursor: "pointer", color: th.text, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}><Icon name="x" size={24} /></button></div>
+            <div className="mobile-reader-content" style={{ maxWidth: 680, margin: "0 auto", background: th.cardBg, padding: "3rem", borderRadius: 16, boxShadow: "0 20px 40px rgba(0,0,0,0.05)", border: `1px solid ${th.borderLight}` }}>
+              {readerModal.loading ? (
+                <div style={{ textAlign: "center", padding: "5rem 0", color: th.textMuted }}><motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} style={{ display: "inline-block" }}><Icon name="loader" size={32} /></motion.div><div style={{ marginTop: 16, fontSize: 16 }}>Extracting article text…</div></div>
+              ) : (
+                <>
+                  <h1 style={{ fontFamily: "'Anton', sans-serif", fontSize: 36, color: th.text, marginBottom: 24, lineHeight: 1.2 }}>{readerModal.title}</h1>
+                  <a href={readerModal.url} target="_blank" rel="noreferrer" style={{ display: "inline-block", color: "#D4924A", textDecoration: "none", fontWeight: 600, fontSize: 14, marginBottom: 32 }}>View Original Article →</a>
+                  <div className="reader-content" style={{ fontSize: 18, lineHeight: 1.6, color: th.text, fontFamily: "Georgia, serif" }} dangerouslySetInnerHTML={{ __html: readerModal.html }} />
+                  <style>{`.reader-content p { margin-bottom: 1.5em; } .reader-content img { max-width: 100%; height: auto; border-radius: 8px; margin: 1em 0; } .reader-content h2 { font-family: 'DM Sans', sans-serif; font-size: 24px; margin: 2em 0 1em; color: ${th.text}; } .reader-content h3 { font-family: 'DM Sans', sans-serif; font-size: 20px; margin: 1.5em 0 1em; color: ${th.text}; } .reader-content a { color: #D4924A; text-decoration: none; } .reader-content a:hover { text-decoration: underline; } .reader-content blockquote { border-left: 4px solid ${th.border}; padding-left: 1em; margin-left: 0; font-style: italic; color: ${th.textMuted}; }`}</style>
+                </>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div style={{ position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", zIndex: 400, display: "flex", flexDirection: "column", gap: 8, width: "90%", maxWidth: 300 }}>
         <AnimatePresence>
           {toasts.map(t => <motion.div key={t.id} initial={{ opacity: 0, y: 20, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, scale: 0.9, y: 10 }} style={{ background: t.type === "error" ? th.danger : th.success, color: "white", padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 8 }}><Icon name={t.type === "error" ? "x" : "check"} size={14} />{t.message}</motion.div>)}
         </AnimatePresence>

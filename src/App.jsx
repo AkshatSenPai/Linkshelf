@@ -1,0 +1,564 @@
+import { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Readability } from "@mozilla/readability";
+import DOMPurify from "dompurify";
+
+function extractYouTubeId(url) {
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&]{11})/);
+  return match ? match[1] : null;
+}
+
+const PLATFORMS = {
+  youtube: { label: "YouTube", color: "#c0392b", bg: "#fff0ef", match: (url) => /youtube\.com|youtu\.be/.test(url) },
+  instagram: { label: "Instagram", color: "#833ab4", bg: "#f5f0ff", match: (url) => /instagram\.com/.test(url) },
+  x: { label: "X / Twitter", color: "#14171a", bg: "#f0f4f8", match: (url) => /twitter\.com|x\.com/.test(url) },
+  image: { label: "Image", color: "#e67e22", bg: "#fdf2e9", match: (url) => /\.(jpeg|jpg|gif|png|webp|svg|bmp)(\?.*)?$/i.test(url) || url.startsWith('data:image/') },
+};
+
+const DEFAULT_CATEGORIES = [
+  "Coding / Dev", "Gym / Fitness", "Cooking", "Finance",
+  "Design", "Music", "News", "Entertainment", "Travel", "Memes"
+];
+
+function detectPlatform(url) {
+  for (const [key, val] of Object.entries(PLATFORMS)) {
+    if (val.match(url)) return key;
+  }
+  return null;
+}
+
+async function fetchMetadata(url, platform) {
+  if (platform === "image") {
+    const fileName = url.split('/').pop().split('?')[0] || "Image File";
+    return { title: fileName, author: "Direct Image", thumbnail: url };
+  }
+  try {
+    if (platform === "youtube") {
+      const res = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+      if (res.ok) { const d = await res.json(); return { title: d.title, author: d.author_name, thumbnail: d.thumbnail_url }; }
+    }
+    if (platform === "instagram") {
+      const res = await fetch(`https://www.instagram.com/oembed/?url=${encodeURIComponent(url)}`);
+      if (res.ok) { const d = await res.json(); return { title: d.title, author: d.author_name, thumbnail: d.thumbnail_url }; }
+    }
+  } catch (_) {}
+  try {
+    const res = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}`);
+    if (res.ok) {
+      const d = await res.json();
+      if (d.status === "success") {
+        let thumbUrl = d.data.image?.url;
+        if (thumbUrl && thumbUrl.startsWith("data:image")) thumbUrl = null;
+        return { title: d.data.title || url, author: d.data.publisher || d.data.author || new URL(url).hostname.replace("www.", ""), thumbnail: thumbUrl || null };
+      }
+    }
+  } catch (_) {}
+  return { title: url, author: new URL(url).hostname.replace("www.", ""), thumbnail: null };
+}
+
+const STORAGE_KEY = "linkshelf_v1";
+
+function useLocalStorage(key, initialValue) {
+  const [storedValue, setStoredValue] = useState(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      if (item) {
+        const parsed = JSON.parse(item);
+        return {
+          links: parsed.links || initialValue.links,
+          categories: parsed.categories || initialValue.categories,
+          theme: parsed.theme || initialValue.theme
+        };
+      }
+      return initialValue;
+    } catch (error) { return initialValue; }
+  });
+  const setValue = (value) => {
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      window.localStorage.setItem(key, JSON.stringify(valueToStore));
+    } catch (error) {}
+  };
+  return [storedValue, setValue];
+}
+
+const Icon = ({ name, size = 16 }) => {
+  const icons = {
+    plus: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>,
+    x: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>,
+    trash: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M19 6l-1 14H6L5 6M10 11v6M14 11v6M9 6V4h6v2"/></svg>,
+    external: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg>,
+    search: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>,
+    check: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6L9 17l-5-5"/></svg>,
+    loader: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>,
+    edit: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+    download: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>,
+    upload: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>,
+    play: <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>,
+    copy: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg>,
+    moon: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>,
+    sun: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>,
+    book: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>,
+    grid: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>,
+    star: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>,
+    starFilled: <svg width={size} height={size} viewBox="0 0 24 24" fill="#f1c40f" stroke="#f1c40f" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>,
+    restore: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>,
+    sort: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="8" y1="12" x2="20" y2="12"></line><line x1="12" y1="18" x2="20" y2="18"></line></svg>
+  };
+  return icons[name] || null;
+};
+
+export default function Linkshelf() {
+  const [data, setData] = useLocalStorage(STORAGE_KEY, { links: [], categories: DEFAULT_CATEGORIES, theme: "light" });
+  const links = data.links.map(l => ({ ...l, tags: l.tags || (l.category ? [l.category] : []), isDeleted: !!l.isDeleted, isPinned: !!l.isPinned }));
+
+  const [activeTab, setActiveTab] = useState("all");
+  const [activeTags, setActiveTags] = useState([]);
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState("newest"); // newest, oldest, az, za
+  const [inputUrl, setInputUrl] = useState("");
+  
+  const [drawer, setDrawer] = useState(null); 
+  const [drawerTags, setDrawerTags] = useState([]); 
+  const [customCat, setCustomCat] = useState("");
+  const [addingCustom, setAddingCustom] = useState(false);
+  
+  const [videoModal, setVideoModal] = useState(null);
+  const [readerModal, setReaderModal] = useState(null);
+  
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkTagDrawer, setBulkTagDrawer] = useState(false);
+  
+  const [toasts, setToasts] = useState([]);
+  const inputRef = useRef();
+  const fileInputRef = useRef();
+
+  const isDark = data.theme === "dark";
+  const th = {
+    bg: isDark ? "#0F0F0F" : "#F5ECD7", header: isDark ? "#111111" : "#1E0F05", headerBrand: isDark ? "#FFFFFF" : "#F5ECD7",
+    inputArea: isDark ? "#1A1A1A" : "#2C1A0E", inputBg: isDark ? "#2A2A2A" : "#1E0F05", inputBorder: isDark ? "#3A3A3A" : "#5C3D2A",
+    inputText: isDark ? "#FFFFFF" : "#F5ECD7", border: isDark ? "#2A2A2A" : "#D4B896", borderLight: isDark ? "#2A2A2A" : "#E8D9C4",
+    text: isDark ? "#FFFFFF" : "#1E0F05", textMuted: isDark ? "#888888" : "#9A7A60", textMuted2: isDark ? "#AAAAAA" : "#6B4F38",
+    cardBg: isDark ? "#1A1A1A" : "white", badgeBgActive: isDark ? "#FFFFFF" : "#1E0F05", badgeTextActive: isDark ? "#0F0F0F" : "#F5ECD7",
+    badgeBg: isDark ? "#2A2A2A" : "#D4B896", badgeText: isDark ? "#AAAAAA" : "#6B4F38", emptyText: isDark ? "#3A3A3A" : "#C9A882",
+    btnBg: isDark ? "#FFFFFF" : "#1E0F05", btnText: isDark ? "#0F0F0F" : "#F5ECD7", danger: "#e74c3c", success: "#27ae60", selectRing: "#3498db"
+  };
+
+  const addToast = (message, type = "success") => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); inputRef.current?.focus(); }
+      if (e.key === "Escape") { setDrawer(null); setVideoModal(null); setReaderModal(null); setIsSelecting(false); }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const persist = (updates) => setData(d => ({ ...d, ...updates }));
+  const toggleTheme = () => persist({ theme: isDark ? "light" : "dark" });
+
+  const handleExport = () => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `linkshelf_backup_${new Date().toISOString().split("T")[0]}.json`;
+    a.click(); URL.revokeObjectURL(url);
+    addToast("Backup exported successfully!");
+  };
+
+  const handleImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target.result);
+        if (parsed.links && parsed.categories) { setData({ ...parsed, theme: data.theme }); addToast("Backup imported successfully!"); }
+      } catch (err) { addToast("Failed to read file.", "error"); }
+    };
+    reader.readAsText(file); e.target.value = null;
+  };
+
+  const handlePaste = async (url) => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    const platform = detectPlatform(trimmed);
+    setDrawer({ url: trimmed, platform, meta: null, loading: true });
+    setInputUrl("");
+    const meta = await fetchMetadata(trimmed, platform);
+    setDrawer({ url: trimmed, platform, meta, loading: false });
+    setDrawerTags([]);
+  };
+
+  const handleSave = () => {
+    if (!drawer) return;
+    const finalTags = new Set(drawerTags);
+    if (addingCustom && customCat.trim()) finalTags.add(customCat.trim());
+    const tagsArray = Array.from(finalTags);
+    const newCategories = new Set(data.categories); tagsArray.forEach(t => newCategories.add(t));
+
+    if (drawer.editingId) {
+      persist({
+        links: links.map(l => l.id === drawer.editingId ? {
+          ...l, title: drawer.meta?.title || drawer.url, author: drawer.meta?.author || "",
+          thumbnail: drawer.meta?.thumbnail || null, tags: tagsArray
+        } : l), categories: Array.from(newCategories)
+      });
+      addToast("Link updated!");
+    } else {
+      persist({ links: [{
+        id: Date.now().toString(), url: drawer.url, platform: drawer.platform,
+        title: drawer.meta?.title || drawer.url, author: drawer.meta?.author || "",
+        thumbnail: drawer.meta?.thumbnail || null, tags: tagsArray, savedAt: new Date().toISOString(),
+        isPinned: false, isDeleted: false
+      }, ...links], categories: Array.from(newCategories) });
+      addToast("Link saved to shelf!");
+    }
+    setDrawer(null); setDrawerTags([]); setCustomCat(""); setAddingCustom(false);
+  };
+
+  const togglePin = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isPinned: !l.isPinned } : l) }); };
+  const moveToTrash = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isDeleted: true } : l) }); addToast("Moved to trash"); };
+  const restoreLink = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isDeleted: false } : l) }); addToast("Restored!"); };
+  const permanentlyDelete = (id) => { persist({ links: links.filter(l => l.id !== id) }); addToast("Permanently deleted", "error"); };
+
+  const handleBulkAction = (action) => {
+    if (action === "trash") {
+      persist({ links: links.map(l => selectedIds.has(l.id) ? { ...l, isDeleted: true } : l) }); addToast(`Moved ${selectedIds.size} links to trash`);
+    } else if (action === "restore") {
+      persist({ links: links.map(l => selectedIds.has(l.id) ? { ...l, isDeleted: false } : l) }); addToast(`Restored ${selectedIds.size} links`);
+    } else if (action === "delete") {
+      persist({ links: links.filter(l => !selectedIds.has(l.id)) }); addToast(`Permanently deleted ${selectedIds.size} links`, "error");
+    }
+    setIsSelecting(false); setSelectedIds(new Set());
+  };
+
+  const handleBulkTagSave = () => {
+    const finalTags = new Set(drawerTags); if (addingCustom && customCat.trim()) finalTags.add(customCat.trim());
+    const tagsArray = Array.from(finalTags);
+    const newCategories = new Set(data.categories); tagsArray.forEach(t => newCategories.add(t));
+    persist({ links: links.map(l => selectedIds.has(l.id) ? { ...l, tags: tagsArray } : l), categories: Array.from(newCategories) });
+    addToast(`Updated tags for ${selectedIds.size} links!`);
+    setBulkTagDrawer(false); setIsSelecting(false); setSelectedIds(new Set()); setDrawerTags([]); setCustomCat("");
+  };
+
+  const handleRead = async (url) => {
+    setReaderModal({ url, loading: true, title: "", html: "" });
+    try {
+      const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
+      const doc = new DOMParser().parseFromString((await res.json()).contents, "text/html");
+      const article = new Readability(doc).parse();
+      if (article && article.content) setReaderModal({ url, loading: false, title: article.title, html: DOMPurify.sanitize(article.content) });
+      else { addToast("Failed to parse article text.", "error"); setReaderModal(null); }
+    } catch (e) { addToast("Network error blocked reading.", "error"); setReaderModal(null); }
+  };
+
+  let processed = links.filter(l => {
+    if (activeTab === "trash") return l.isDeleted;
+    if (l.isDeleted) return false;
+    const matchTab = activeTab === "all" || l.platform === activeTab;
+    const matchSearch = !search || l.title.toLowerCase().includes(search.toLowerCase()) || l.author.toLowerCase().includes(search.toLowerCase());
+    const matchTags = activeTags.length === 0 || activeTags.some(t => l.tags.includes(t));
+    return matchTab && matchTags && matchSearch;
+  });
+
+  processed.sort((a, b) => {
+    if (activeTab !== "trash") {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+    }
+    if (sortBy === "newest") return new Date(b.savedAt) - new Date(a.savedAt);
+    if (sortBy === "oldest") return new Date(a.savedAt) - new Date(b.savedAt);
+    if (sortBy === "az") return a.title.localeCompare(b.title);
+    if (sortBy === "za") return b.title.localeCompare(a.title);
+    return 0;
+  });
+
+  const tabCounts = {
+    all: links.filter(l => !l.isDeleted).length,
+    youtube: links.filter(l => !l.isDeleted && l.platform === "youtube").length,
+    instagram: links.filter(l => !l.isDeleted && l.platform === "instagram").length,
+    x: links.filter(l => !l.isDeleted && l.platform === "x").length,
+    trash: links.filter(l => l.isDeleted).length
+  };
+
+  const visibleCategories = [...new Set(links.filter(l => !l.isDeleted).flatMap(l => l.tags))];
+
+  return (
+    <div style={{ minHeight: "100vh", background: th.bg, fontFamily: "'DM Sans', sans-serif", transition: "background 0.3s ease", paddingBottom: isSelecting ? "80px" : 0 }}>
+      <link href="https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+
+      {/* ── HEADER ── */}
+      <header style={{
+        background: th.header, padding: "0 2rem", display: "flex", alignItems: "center", justifyContent: "space-between",
+        height: 64, position: "sticky", top: 0, zIndex: 100, borderBottom: `1px solid ${th.borderLight}`, transition: "background 0.3s ease"
+      }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: th.headerBrand, letterSpacing: 1, textTransform: "uppercase" }}>Linkshelf</span>
+          <span style={{ fontSize: 12, color: th.textMuted, fontWeight: 500 }}>personal curator</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+              <Icon name="sort" size={14} />
+              <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ appearance: "none", background: "none", border: "none", color: th.textMuted, fontSize: 13, outline: "none", paddingLeft: 6, cursor: "pointer", fontWeight: 500 }}>
+                <option value="newest">Newest First</option>
+                <option value="oldest">Oldest First</option>
+                <option value="az">A to Z</option>
+                <option value="za">Z to A</option>
+              </select>
+            </div>
+            <div style={{ width: 1, height: 16, background: th.border, margin: "auto 8px" }}></div>
+            <button onClick={() => { setIsSelecting(!isSelecting); setSelectedIds(new Set()); }} title="Bulk Select" style={{ background: isSelecting ? th.text : "none", borderRadius: 8, padding: 6, border: "none", color: isSelecting ? th.bg : th.textMuted, cursor: "pointer", display: "flex", alignItems: "center" }}>
+              <Icon name="grid" size={16} />
+            </button>
+            <button onClick={toggleTheme} title="Toggle Theme" style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", display: "flex", alignItems: "center" }}>
+              <Icon name={isDark ? "sun" : "moon"} size={16} />
+            </button>
+            <button onClick={handleExport} title="Export Backup" style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", display: "flex", alignItems: "center" }}>
+              <Icon name="download" size={16} />
+            </button>
+            <label title="Import Backup" style={{ color: th.textMuted, cursor: "pointer", display: "flex", alignItems: "center" }}>
+              <Icon name="upload" size={16} />
+              <input type="file" ref={fileInputRef} accept=".json" onChange={handleImport} style={{ display: "none" }} />
+            </label>
+          </div>
+        </div>
+      </header>
+
+      {/* ── INPUT BAR ── */}
+      <div style={{ background: th.inputArea, padding: "1.5rem 2rem", transition: "background 0.3s ease" }}>
+        <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", gap: 10 }}>
+          <input
+            ref={inputRef} value={inputUrl} onChange={e => setInputUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handlePaste(inputUrl)}
+            placeholder="Paste a link (Cmd/Ctrl + K)…"
+            style={{
+              flex: 1, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${th.inputBorder}`, background: th.inputBg,
+              color: th.inputText, fontSize: 14, outline: "none", fontFamily: "'DM Sans', sans-serif"
+            }} />
+          <button onClick={() => handlePaste(inputUrl)} style={{ background: "#D4924A", border: "none", borderRadius: 10, padding: "0 20px", cursor: "pointer", color: "#1E0F05", fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 6 }}>
+            <Icon name="plus" size={16} /> Add
+          </button>
+        </div>
+      </div>
+
+      {/* ── TABS ── */}
+      <div style={{ background: th.bg, borderBottom: `1.5px solid ${th.border}`, padding: "0 2rem" }}>
+        <div style={{ maxWidth: 960, margin: "0 auto", display: "flex", gap: 0, overflowX: "auto" }}>
+          {[["all", "All"], ["youtube", "YouTube"], ["instagram", "Instagram"], ["x", "X / Twitter"], ["trash", "Trash"]].map(([key, label]) => (
+            <button key={key} onClick={() => { setActiveTab(key); setActiveTags([]); }}
+              style={{
+                background: "none", border: "none", cursor: "pointer", padding: "14px 20px", fontSize: 13, fontWeight: 600,
+                color: activeTab === key ? th.text : th.textMuted, borderBottom: activeTab === key ? `2.5px solid ${th.text}` : "2.5px solid transparent",
+                fontFamily: "'DM Sans', sans-serif", display: "flex", alignItems: "center", gap: 6, transition: "color 0.2s"
+              }}>
+              {label}
+              <span style={{ fontSize: 11, background: activeTab === key ? th.badgeBgActive : th.badgeBg, color: activeTab === key ? th.badgeTextActive : th.badgeText, borderRadius: 99, padding: "1px 7px" }}>{tabCounts[key]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── FILTERS (Hidden in Trash) ── */}
+      {activeTab !== "trash" && (
+        <div style={{ maxWidth: 960, margin: "0 auto", padding: "1rem 2rem 0" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ position: "relative", marginRight: 4 }}>
+              <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: th.textMuted }}><Icon name="search" size={14} /></span>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…"
+                style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1px solid ${th.border}`, background: th.cardBg, color: th.text, fontSize: 13, outline: "none", width: 160, fontFamily: "'DM Sans', sans-serif" }} />
+            </div>
+            <button onClick={() => setActiveTags([])} style={{
+              padding: "6px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: activeTags.length === 0 ? `1.5px solid ${th.text}` : `1px solid ${th.border}`,
+              background: activeTags.length === 0 ? th.text : th.cardBg, color: activeTags.length === 0 ? th.bg : th.textMuted2, cursor: "pointer"
+            }}>All topics</button>
+            {visibleCategories.map(cat => {
+              const isActive = activeTags.includes(cat);
+              return (
+                <button key={cat} onClick={() => setActiveTags(p => p.includes(cat) ? p.filter(t => t !== cat) : [...p, cat])} style={{
+                  padding: "6px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: isActive ? `1.5px solid ${th.text}` : `1px solid ${th.border}`,
+                  background: isActive ? th.text : th.cardBg, color: isActive ? th.bg : th.textMuted2, cursor: "pointer", display: "flex", alignItems: "center", gap: 4
+                }}>
+                  {isActive && <Icon name="check" size={10} />} {cat}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── GRID ── */}
+      <main style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 2rem 4rem" }}>
+        {processed.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "5rem 0", color: th.textMuted }}>
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 32, textTransform: "uppercase", color: th.emptyText, marginBottom: 8 }}>{activeTab === "trash" ? "Trash is empty" : "Empty shelf"}</div>
+            <div style={{ fontSize: 14 }}>{activeTab === "trash" ? "Deleted items appear here" : "Paste a link above to start curating"}</div>
+          </div>
+        ) : (
+          <motion.div layout style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
+            <AnimatePresence>
+              {processed.map(link => (
+                <LinkCard 
+                  key={link.id} link={link} th={th} isSelecting={isSelecting} isSelected={selectedIds.has(link.id)}
+                  onSelect={() => setSelectedIds(p => { const n = new Set(p); n.has(link.id) ? n.delete(link.id) : n.add(link.id); return n; })}
+                  onDelete={() => moveToTrash(link.id)} onEdit={(l) => { setDrawer({ editingId: l.id, url: l.url, platform: l.platform, meta: { title: l.title, author: l.author, thumbnail: l.thumbnail }, loading: false }); setDrawerTags([...l.tags]); setAddingCustom(false); setCustomCat(""); }}
+                  onWatch={setVideoModal} onRead={handleRead} onCopy={() => { navigator.clipboard.writeText(link.url); addToast("Copied!"); }}
+                  onTogglePin={() => togglePin(link.id)} onRestore={() => restoreLink(link.id)} onPermDelete={() => permanentlyDelete(link.id)}
+                  isTrash={activeTab === "trash"}
+                />
+              ))}
+            </AnimatePresence>
+          </motion.div>
+        )}
+      </main>
+
+      {/* ── BULK ACTION BAR ── */}
+      <AnimatePresence>
+        {isSelecting && (
+          <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
+            style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 150, background: th.cardBg, border: `1.5px solid ${th.text}`, borderRadius: 99, padding: "10px 20px", boxShadow: "0 10px 30px rgba(0,0,0,0.2)", display: "flex", alignItems: "center", gap: 16 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: th.text }}>{selectedIds.size} selected</span>
+            <div style={{ width: 1, height: 20, background: th.border }}></div>
+            {activeTab === "trash" ? (
+              <>
+                <button onClick={() => handleBulkAction("restore")} disabled={!selectedIds.size} style={{ background: "none", border: "none", color: th.text, fontWeight: 600, cursor: selectedIds.size ? "pointer" : "not-allowed", opacity: selectedIds.size ? 1 : 0.5 }}>Restore</button>
+                <button onClick={() => handleBulkAction("delete")} disabled={!selectedIds.size} style={{ background: "none", border: "none", color: th.danger, fontWeight: 600, cursor: selectedIds.size ? "pointer" : "not-allowed", opacity: selectedIds.size ? 1 : 0.5 }}>Erase</button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => { setDrawerTags([]); setBulkTagDrawer(true); }} disabled={!selectedIds.size} style={{ background: "none", border: "none", color: th.text, fontWeight: 600, cursor: selectedIds.size ? "pointer" : "not-allowed", opacity: selectedIds.size ? 1 : 0.5 }}>Edit Tags</button>
+                <button onClick={() => handleBulkAction("trash")} disabled={!selectedIds.size} style={{ background: "none", border: "none", color: th.danger, fontWeight: 600, cursor: selectedIds.size ? "pointer" : "not-allowed", opacity: selectedIds.size ? 1 : 0.5 }}>Move to Trash</button>
+              </>
+            )}
+            <button onClick={() => { setIsSelecting(false); setSelectedIds(new Set()); }} style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer" }}><Icon name="x" size={16} /></button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── MODALS (Drawer, Video, Reader, Toasts remain unchanged in functionality) ── */}
+      <AnimatePresence>
+        {(drawer || bulkTagDrawer) && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => !drawer?.loading && setDrawer(null) && setBulkTagDrawer(false)}>
+            <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              onClick={e => e.stopPropagation()} style={{ background: th.bg, borderRadius: "20px 20px 0 0", borderTop: `1px solid ${th.border}`, width: "100%", maxWidth: 560, padding: "2rem", boxSizing: "border-box" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+                <div>
+                  <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 20, textTransform: "uppercase", color: th.text }}>{bulkTagDrawer ? `Edit Tags (${selectedIds.size})` : (drawer?.editingId ? "Edit Link" : "Confirm & Save")}</div>
+                </div>
+                <button onClick={() => { setDrawer(null); setBulkTagDrawer(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: th.textMuted }}><Icon name="x" size={20} /></button>
+              </div>
+              {drawer?.loading ? (
+                <div style={{ textAlign: "center", padding: "2rem 0", color: th.textMuted }}><Icon name="loader" size={28} /></div>
+              ) : (
+                <>
+                  {!bulkTagDrawer && (
+                    <>
+                      <div style={{ position: "relative", marginBottom: 12 }}>
+                        {drawer.meta?.thumbnail ? <img src={drawer.meta.thumbnail} alt="" style={{ width: "100%", borderRadius: 10, maxHeight: 160, objectFit: "cover" }} /> : <div style={{ width: "100%", height: 100, borderRadius: 10, background: th.borderLight, display: "flex", alignItems: "center", justifyContent: "center", color: th.textMuted, fontSize: 12 }}>No image</div>}
+                        <input placeholder="Custom Image URL..." value={drawer.meta?.thumbnail || ""} onChange={e => setDrawer({ ...drawer, meta: { ...drawer.meta, thumbnail: e.target.value }})} style={{ position: "absolute", bottom: 8, left: 8, right: 8, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "rgba(255,255,255,0.9)", color: "#000", fontSize: 11, outline: "none", fontFamily: "'DM Sans', sans-serif" }} />
+                      </div>
+                      <input value={drawer.meta?.title || ""} onChange={e => setDrawer({ ...drawer, meta: { ...drawer.meta, title: e.target.value }})} style={{ width: "100%", fontSize: 15, fontWeight: 600, color: th.text, marginBottom: 4, background: "transparent", border: "none", borderBottom: `1px dashed ${th.border}`, outline: "none", paddingBottom: 2, fontFamily: "'DM Sans', sans-serif" }} />
+                      <input value={drawer.meta?.author || ""} onChange={e => setDrawer({ ...drawer, meta: { ...drawer.meta, author: e.target.value }})} style={{ width: "100%", fontSize: 12, color: th.textMuted, marginBottom: 16, background: "transparent", border: "none", borderBottom: `1px dashed ${th.border}`, outline: "none", paddingBottom: 2, fontFamily: "'DM Sans', sans-serif" }} />
+                    </>
+                  )}
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {data.categories.map(cat => {
+                        const isActive = drawerTags.includes(cat);
+                        return <button key={cat} onClick={() => setDrawerTags(p => p.includes(cat) ? p.filter(t => t !== cat) : [...p, cat])} style={{ padding: "6px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: isActive ? `1.5px solid ${th.text}` : `1px solid ${th.border}`, background: isActive ? th.text : "transparent", color: isActive ? th.bg : th.textMuted2, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>{isActive && <Icon name="check" size={11} />} {cat}</button>;
+                      })}
+                      <button onClick={() => setAddingCustom(true)} style={{ padding: "6px 14px", borderRadius: 99, fontSize: 12, border: addingCustom ? "1.5px solid #D4924A" : `1px dashed ${th.border}`, color: "#D4924A", background: "none", cursor: "pointer" }}>+ New tag</button>
+                    </div>
+                  </div>
+                  {addingCustom && <input value={customCat} onChange={e => setCustomCat(e.target.value)} placeholder="e.g. AI, Startup..." autoFocus style={{ width: "100%", padding: "9px 12px", borderRadius: 8, marginTop: 10, border: "1.5px solid #D4924A", background: th.cardBg, color: th.text, fontSize: 13, outline: "none", boxSizing: "border-box" }} />}
+                  <button onClick={bulkTagDrawer ? handleBulkTagSave : handleSave} style={{ marginTop: 20, width: "100%", padding: "13px", background: th.btnBg, color: th.btnText, border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{bulkTagDrawer ? "Apply Tags" : "Save"}</button>
+                </>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {videoModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }} onClick={() => setVideoModal(null)}>
+            <div style={{ position: "absolute", top: 20, right: 20 }}><button onClick={() => setVideoModal(null)} style={{ background: "rgba(255,255,255,0.2)", border: "none", borderRadius: "50%", padding: 10, cursor: "pointer", color: "white" }}><Icon name="x" size={24} /></button></div>
+            <motion.iframe initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} src={`https://www.youtube.com/embed/${videoModal}?autoplay=1`} style={{ width: "100%", maxWidth: 1000, aspectRatio: "16/9", borderRadius: 12, border: "none" }} allow="autoplay; encrypted-media; picture-in-picture" allowFullScreen />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div style={{ position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", zIndex: 400, display: "flex", flexDirection: "column", gap: 8 }}>
+        <AnimatePresence>
+          {toasts.map(t => <motion.div key={t.id} initial={{ opacity: 0, y: 20, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, scale: 0.9, y: 10 }} style={{ background: t.type === "error" ? th.danger : th.success, color: "white", padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 8 }}><Icon name={t.type === "error" ? "x" : "check"} size={14} />{t.message}</motion.div>)}
+        </AnimatePresence>
+      </div>
+
+    </div>
+  );
+}
+
+function LinkCard({ link, th, isSelecting, isSelected, onSelect, onDelete, onEdit, onWatch, onRead, onCopy, onTogglePin, onRestore, onPermDelete, isTrash }) {
+  const plat = PLATFORMS[link.platform];
+  const isYouTube = link.platform === "youtube";
+  const ytId = isYouTube ? extractYouTubeId(link.url) : null;
+  const showReadBtn = !["youtube", "image", "instagram"].includes(link.platform);
+  
+  return (
+    <motion.div layout initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ duration: 0.2 }}
+      onClick={isSelecting ? onSelect : undefined}
+      style={{ background: th.cardBg, borderRadius: 14, overflow: "hidden", border: isSelected ? `2px solid ${th.selectRing}` : `1px solid ${th.borderLight}`, display: "flex", flexDirection: "column", cursor: isSelecting ? "pointer" : "default", position: "relative", boxShadow: isSelected ? `0 0 0 2px ${th.bg}, 0 0 0 4px ${th.selectRing}` : "none", transition: "box-shadow 0.2s, border 0.2s" }}
+      whileHover={!isSelecting ? { y: -4, boxShadow: "0 12px 24px rgba(0,0,0,0.12)" } : {}}>
+      
+      {isSelecting && <div style={{ position: "absolute", top: 10, right: 10, zIndex: 10, background: isSelected ? th.selectRing : "rgba(0,0,0,0.5)", color: "white", borderRadius: "50%", padding: 4 }}>{isSelected ? <Icon name="check" size={14} /> : <div style={{ width: 14, height: 14 }} />}</div>}
+      {!isSelecting && !isTrash && (
+        <button onClick={(e) => { e.stopPropagation(); onTogglePin(); }} style={{ position: "absolute", top: 10, right: 10, zIndex: 10, background: "rgba(0,0,0,0.5)", border: "none", borderRadius: "50%", padding: 6, cursor: "pointer", color: "white", backdropFilter: "blur(4px)" }}>
+          <Icon name={link.isPinned ? "starFilled" : "star"} size={14} />
+        </button>
+      )}
+
+      {link.thumbnail ? <img src={link.thumbnail} alt="" style={{ width: "100%", height: 140, objectFit: "cover" }} /> : <div style={{ height: 80, background: plat?.bg || th.borderLight, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontFamily: "'Anton', sans-serif", fontSize: 18, color: plat?.color || th.textMuted, textTransform: "uppercase", opacity: 0.5 }}>{plat?.label || "Link"}</span></div>}
+
+      <div style={{ padding: "12px 14px", flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {plat && <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 99, background: plat.bg, color: plat.color }}>{plat.label}</span>}
+          {link.tags?.map(t => <span key={t} style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 99, background: th.bg, color: th.textMuted2 }}>{t}</span>)}
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: th.text, lineHeight: 1.4, flex: 1, marginTop: 4 }}>{link.title.length > 80 ? link.title.slice(0, 80) + "…" : link.title}</div>
+        <div style={{ fontSize: 11, color: th.textMuted }}>{link.author}</div>
+        
+        {!isSelecting && (
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            {isTrash ? (
+              <>
+                <button onClick={(e) => { e.stopPropagation(); onRestore(); }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="restore" size={12} /> Restore</button>
+                <button onClick={(e) => { e.stopPropagation(); onPermDelete(); }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: "#ffebee", color: th.danger, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="trash" size={12} /> Erase</button>
+              </>
+            ) : (
+              <>
+                {isYouTube && ytId ? (
+                  <button onClick={(e) => { e.stopPropagation(); onWatch(ytId); }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="play" size={12} /> Watch</button>
+                ) : showReadBtn ? (
+                  <button onClick={(e) => { e.stopPropagation(); onRead(link.url); }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="book" size={12} /> Read</button>
+                ) : (
+                  <a href={link.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ flex: 1, padding: "7px 0", borderRadius: 8, background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="external" size={12} /> Open</a>
+                )}
+                <button onClick={(e) => { e.stopPropagation(); onCopy(); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="copy" size={13} /></button>
+                <button onClick={(e) => { e.stopPropagation(); onEdit(link); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="edit" size={13} /></button>
+                <button onClick={(e) => { e.stopPropagation(); onDelete(link.id); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.danger }}><Icon name="trash" size={13} /></button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}

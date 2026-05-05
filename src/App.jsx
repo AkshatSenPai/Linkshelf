@@ -100,14 +100,17 @@ const Icon = ({ name, size = 16 }) => {
     restore: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>,
     sort: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="8" y1="12" x2="20" y2="12"></line><line x1="12" y1="18" x2="20" y2="18"></line></svg>,
     cloud: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>,
-    cloudCheck: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path d="M9 13l2 2 4-4"/></svg>
+    cloudCheck: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path d="M9 13l2 2 4-4"/></svg>,
+    stats: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
+    note: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
+    archive: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
   };
   return icons[name] || null;
 };
 
 export default function Linkshelf() {
   const [data, setData] = useLocalStorage(STORAGE_KEY, { links: [], categories: DEFAULT_CATEGORIES, theme: "light" });
-  const links = data.links.map(l => ({ ...l, tags: l.tags || (l.category ? [l.category] : []), isDeleted: !!l.isDeleted, isPinned: !!l.isPinned }));
+  const links = data.links.map(l => ({ ...l, tags: l.tags || (l.category ? [l.category] : []), isDeleted: !!l.isDeleted, isPinned: !!l.isPinned, isRead: !!l.isRead, isArchived: !!l.isArchived, note: l.note || "" }));
 
   const [activeTab, setActiveTab] = useState("all");
   const [activeTags, setActiveTags] = useState([]);
@@ -126,6 +129,8 @@ export default function Linkshelf() {
   const [isSelecting, setIsSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkTagDrawer, setBulkTagDrawer] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+  const [readFilter, setReadFilter] = useState("all"); // all | unread | read
   
   // Cloud Sync State
   const [syncDrawer, setSyncDrawer] = useState(false);
@@ -160,7 +165,7 @@ export default function Linkshelf() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); inputRef.current?.focus(); }
-      if (e.key === "Escape") { setDrawer(null); setVideoModal(null); setReaderModal(null); setIsSelecting(false); setSyncDrawer(false); }
+      if (e.key === "Escape") { setDrawer(null); setVideoModal(null); setReaderModal(null); setIsSelecting(false); setSyncDrawer(false); setShowStats(false); }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -277,10 +282,28 @@ export default function Linkshelf() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
-      try {
-        const parsed = JSON.parse(event.target.result);
-        if (parsed.links && parsed.categories) { persist(parsed); addToast("Backup imported successfully!"); }
-      } catch (err) { addToast("Failed to read file.", "error"); }
+      const raw = event.target.result;
+      // Detect browser bookmark HTML (Netscape format)
+      if (raw.trim().startsWith("<!DOCTYPE NETSCAPE") || raw.includes("<DL>")) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(raw, "text/html");
+        const anchors = Array.from(doc.querySelectorAll("a"));
+        if (!anchors.length) { addToast("No bookmarks found.", "error"); return; }
+        const imported = anchors.map(a => ({
+          id: Date.now().toString() + Math.random().toString(36).slice(2),
+          url: a.href, platform: detectPlatform(a.href),
+          title: a.textContent.trim() || a.href,
+          author: "", thumbnail: null, tags: [], note: "",
+          savedAt: new Date().toISOString(), isPinned: false, isDeleted: false, isRead: false, isArchived: false
+        }));
+        persist({ links: [...imported, ...links] });
+        addToast(`Imported ${imported.length} bookmarks!`);
+      } else {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed.links && parsed.categories) { persist(parsed); addToast("Backup imported successfully!"); }
+        } catch (err) { addToast("Failed to read file.", "error"); }
+      }
     };
     reader.readAsText(file); e.target.value = null;
   };
@@ -288,11 +311,13 @@ export default function Linkshelf() {
   const handlePaste = async (url) => {
     const trimmed = url.trim();
     if (!trimmed) return;
+    const duplicate = links.find(l => !l.isDeleted && !l.isArchived && l.url.trim() === trimmed);
+    if (duplicate) { addToast("Already on your shelf!", "error"); return; }
     const platform = detectPlatform(trimmed);
-    setDrawer({ url: trimmed, platform, meta: null, loading: true });
+    setDrawer({ url: trimmed, platform, meta: null, loading: true, note: "" });
     setInputUrl("");
     const meta = await fetchMetadata(trimmed, platform);
-    setDrawer({ url: trimmed, platform, meta, loading: false });
+    setDrawer({ url: trimmed, platform, meta, loading: false, note: "" });
     setDrawerTags([]);
   };
 
@@ -307,7 +332,7 @@ export default function Linkshelf() {
       persist({
         links: links.map(l => l.id === drawer.editingId ? {
           ...l, title: drawer.meta?.title || drawer.url, author: drawer.meta?.author || "",
-          thumbnail: drawer.meta?.thumbnail || null, tags: tagsArray
+          thumbnail: drawer.meta?.thumbnail || null, tags: tagsArray, note: drawer.note || ""
         } : l), categories: Array.from(newCategories)
       });
       addToast("Link updated!");
@@ -315,8 +340,8 @@ export default function Linkshelf() {
       persist({ links: [{
         id: Date.now().toString(), url: drawer.url, platform: drawer.platform,
         title: drawer.meta?.title || drawer.url, author: drawer.meta?.author || "",
-        thumbnail: drawer.meta?.thumbnail || null, tags: tagsArray, savedAt: new Date().toISOString(),
-        isPinned: false, isDeleted: false
+        thumbnail: drawer.meta?.thumbnail || null, tags: tagsArray, note: drawer.note || "",
+        savedAt: new Date().toISOString(), isPinned: false, isDeleted: false, isRead: false, isArchived: false
       }, ...links], categories: Array.from(newCategories) });
       addToast("Link saved to shelf!");
     }
@@ -324,6 +349,9 @@ export default function Linkshelf() {
   };
 
   const togglePin = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isPinned: !l.isPinned } : l) }); };
+  const toggleRead = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isRead: !l.isRead } : l) }); };
+  const archiveLink = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isArchived: true } : l) }); addToast("Archived!"); };
+  const unarchiveLink = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isArchived: false } : l) }); addToast("Unarchived!"); };
   const moveToTrash = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isDeleted: true } : l) }); addToast("Moved to trash"); };
   const restoreLink = (id) => { persist({ links: links.map(l => l.id === id ? { ...l, isDeleted: false } : l) }); addToast("Restored!"); };
   const permanentlyDelete = (id) => { persist({ links: links.filter(l => l.id !== id) }); addToast("Permanently deleted", "error"); };
@@ -415,11 +443,13 @@ export default function Linkshelf() {
 
   let processed = links.filter(l => {
     if (activeTab === "trash") return l.isDeleted;
-    if (l.isDeleted) return false;
+    if (activeTab === "archive") return l.isArchived && !l.isDeleted;
+    if (l.isDeleted || l.isArchived) return false;
     const matchTab = activeTab === "all" || l.platform === activeTab;
     const matchSearch = !search || l.title.toLowerCase().includes(search.toLowerCase()) || l.author.toLowerCase().includes(search.toLowerCase());
     const matchTags = activeTags.length === 0 || activeTags.some(t => l.tags.includes(t));
-    return matchTab && matchTags && matchSearch;
+    const matchRead = readFilter === "all" || (readFilter === "read" && l.isRead) || (readFilter === "unread" && !l.isRead);
+    return matchTab && matchTags && matchSearch && matchRead;
   });
 
   processed.sort((a, b) => {
@@ -431,18 +461,21 @@ export default function Linkshelf() {
     if (sortBy === "oldest") return new Date(a.savedAt) - new Date(b.savedAt);
     if (sortBy === "az") return a.title.localeCompare(b.title);
     if (sortBy === "za") return b.title.localeCompare(a.title);
+    if (sortBy === "unread") return (a.isRead ? 1 : 0) - (b.isRead ? 1 : 0);
     return 0;
   });
 
   const tabCounts = {
-    all: links.filter(l => !l.isDeleted).length,
-    youtube: links.filter(l => !l.isDeleted && l.platform === "youtube").length,
-    instagram: links.filter(l => !l.isDeleted && l.platform === "instagram").length,
-    x: links.filter(l => !l.isDeleted && l.platform === "x").length,
+    all: links.filter(l => !l.isDeleted && !l.isArchived).length,
+    youtube: links.filter(l => !l.isDeleted && !l.isArchived && l.platform === "youtube").length,
+    instagram: links.filter(l => !l.isDeleted && !l.isArchived && l.platform === "instagram").length,
+    x: links.filter(l => !l.isDeleted && !l.isArchived && l.platform === "x").length,
+    archive: links.filter(l => l.isArchived && !l.isDeleted).length,
     trash: links.filter(l => l.isDeleted).length
   };
+  const unreadCount = links.filter(l => !l.isDeleted && !l.isArchived && !l.isRead).length;
 
-  const visibleCategories = [...new Set(links.filter(l => !l.isDeleted).flatMap(l => l.tags))];
+  const visibleCategories = [...new Set(links.filter(l => !l.isDeleted && !l.isArchived).flatMap(l => l.tags))];
 
   return (
     <div style={{ minHeight: "100vh", background: th.bg, fontFamily: "'DM Sans', sans-serif", transition: "background 0.3s ease", paddingBottom: isSelecting ? "80px" : 0 }}>
@@ -466,10 +499,14 @@ export default function Linkshelf() {
                 <option value="oldest">Oldest First</option>
                 <option value="az">A to Z</option>
                 <option value="za">Z to A</option>
+                <option value="unread">Unread First</option>
               </select>
             </div>
             <div className="header-divider" style={{ width: 1, height: 16, background: th.border, margin: "auto 8px" }}></div>
             
+            <button onClick={() => setShowStats(true)} title="Stats" style={{ background: "none", border: "none", color: th.textMuted, cursor: "pointer", display: "flex", alignItems: "center" }}>
+              <Icon name="stats" size={16} />
+            </button>
             <button onClick={() => setSyncDrawer(true)} title="Cloud Sync" style={{ background: "none", border: "none", color: syncConfig.token ? "#D4924A" : th.textMuted, cursor: "pointer", display: "flex", alignItems: "center", position: "relative" }}>
               <Icon name={syncConfig.token ? "cloudCheck" : "cloud"} size={16} />
               {syncStatus === "syncing" && <span style={{ position: "absolute", top: -2, right: -4, width: 6, height: 6, background: "#3498db", borderRadius: "50%", animation: "pulse 1s infinite" }} />}
@@ -488,7 +525,7 @@ export default function Linkshelf() {
             </button>
             <label title="Import Backup" style={{ color: th.textMuted, cursor: "pointer", display: "flex", alignItems: "center" }}>
               <Icon name="upload" size={16} />
-              <input type="file" ref={fileInputRef} accept=".json" onChange={handleImport} style={{ display: "none" }} />
+              <input type="file" ref={fileInputRef} accept=".json,.html,text/html" onChange={handleImport} style={{ display: "none" }} />
             </label>
           </div>
         </div>
@@ -513,7 +550,7 @@ export default function Linkshelf() {
       {/* ── TABS ── */}
       <div className="mobile-tabs-container" style={{ background: th.bg, borderBottom: `1.5px solid ${th.border}`, padding: "0 2rem" }}>
         <div className="scroll-hide" style={{ maxWidth: 960, margin: "0 auto", display: "flex", gap: 0, overflowX: "auto" }}>
-          {[["all", "All"], ["youtube", "YouTube"], ["instagram", "Instagram"], ["x", "X / Twitter"], ["trash", "Trash"]].map(([key, label]) => (
+          {[["all", "All"], ["youtube", "YouTube"], ["instagram", "Instagram"], ["x", "X / Twitter"], ["archive", "Archive"], ["trash", "Trash"]].map(([key, label]) => (
             <button key={key} onClick={() => { setActiveTab(key); setActiveTags([]); }}
               style={{
                 background: "none", border: "none", cursor: "pointer", padding: "14px 20px", fontSize: 13, fontWeight: 600,
@@ -528,7 +565,7 @@ export default function Linkshelf() {
       </div>
 
       {/* ── FILTERS ── */}
-      {activeTab !== "trash" && (
+      {activeTab !== "trash" && activeTab !== "archive" && (
         <div className="mobile-filters-container" style={{ maxWidth: 960, margin: "0 auto", padding: "1rem 2rem 0" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ position: "relative", marginRight: 4 }}>
@@ -536,6 +573,12 @@ export default function Linkshelf() {
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…"
                 style={{ padding: "7px 12px 7px 30px", borderRadius: 8, border: `1px solid ${th.border}`, background: th.cardBg, color: th.text, fontSize: 13, outline: "none", width: 160, fontFamily: "'DM Sans', sans-serif" }} />
             </div>
+            {["all", "unread", "read"].map(f => (
+              <button key={f} onClick={() => setReadFilter(f)} style={{ padding: "6px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: readFilter === f ? `1.5px solid #D4924A` : `1px solid ${th.border}`, background: readFilter === f ? "#D4924A" : th.cardBg, color: readFilter === f ? "#1E0F05" : th.textMuted2, cursor: "pointer" }}>
+                {f === "all" ? `All${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}` : f.charAt(0).toUpperCase() + f.slice(1)}
+              </button>
+            ))}
+            <div style={{ width: 1, height: 16, background: th.border }} />
             <button onClick={() => setActiveTags([])} style={{
               padding: "6px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: activeTags.length === 0 ? `1.5px solid ${th.text}` : `1px solid ${th.border}`,
               background: activeTags.length === 0 ? th.text : th.cardBg, color: activeTags.length === 0 ? th.bg : th.textMuted2, cursor: "pointer"
@@ -569,10 +612,12 @@ export default function Linkshelf() {
                 <LinkCard 
                   key={link.id} link={link} th={th} isSelecting={isSelecting} isSelected={selectedIds.has(link.id)}
                   onSelect={() => setSelectedIds(p => { const n = new Set(p); n.has(link.id) ? n.delete(link.id) : n.add(link.id); return n; })}
-                  onDelete={() => moveToTrash(link.id)} onEdit={(l) => { setDrawer({ editingId: l.id, url: l.url, platform: l.platform, meta: { title: l.title, author: l.author, thumbnail: l.thumbnail }, loading: false }); setDrawerTags([...l.tags]); setAddingCustom(false); setCustomCat(""); }}
+                  onDelete={() => moveToTrash(link.id)} onEdit={(l) => { setDrawer({ editingId: l.id, url: l.url, platform: l.platform, meta: { title: l.title, author: l.author, thumbnail: l.thumbnail }, note: l.note || "", loading: false }); setDrawerTags([...l.tags]); setAddingCustom(false); setCustomCat(""); }}
                   onWatch={setVideoModal} onRead={handleRead} onCopy={() => { navigator.clipboard.writeText(link.url); addToast("Copied!"); }}
-                  onTogglePin={() => togglePin(link.id)} onRestore={() => restoreLink(link.id)} onPermDelete={() => permanentlyDelete(link.id)}
-                  isTrash={activeTab === "trash"}
+                  onTogglePin={() => togglePin(link.id)} onToggleRead={() => toggleRead(link.id)}
+                  onArchive={() => archiveLink(link.id)} onUnarchive={() => unarchiveLink(link.id)}
+                  onRestore={() => restoreLink(link.id)} onPermDelete={() => permanentlyDelete(link.id)}
+                  isTrash={activeTab === "trash"} isArchive={activeTab === "archive"}
                 />
               ))}
             </AnimatePresence>
@@ -671,12 +716,51 @@ export default function Linkshelf() {
                     </div>
                   </div>
                   {addingCustom && <input value={customCat} onChange={e => setCustomCat(e.target.value)} placeholder="e.g. AI, Startup..." autoFocus style={{ width: "100%", padding: "9px 12px", borderRadius: 8, marginTop: 10, border: "1.5px solid #D4924A", background: th.cardBg, color: th.text, fontSize: 13, outline: "none", boxSizing: "border-box" }} />}
+                  {!bulkTagDrawer && <><div style={{ fontSize: 12, fontWeight: 600, color: th.textMuted, marginTop: 16, marginBottom: 6 }}>Personal Note</div><textarea value={drawer?.note || ""} onChange={e => setDrawer({ ...drawer, note: e.target.value })} placeholder="Add a note to remember why you saved this..." rows={3} style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: `1px solid ${th.border}`, background: th.cardBg, color: th.text, fontSize: 13, outline: "none", resize: "vertical", fontFamily: "'DM Sans', sans-serif", boxSizing: "border-box" }} /></>}
                   <button onClick={bulkTagDrawer ? handleBulkTagSave : handleSave} style={{ marginTop: 20, width: "100%", padding: "13px", background: th.btnBg, color: th.btnText, border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{bulkTagDrawer ? "Apply Tags" : "Save"}</button>
                 </>
               ))}
             </motion.div>
           </motion.div>
         )}
+      </AnimatePresence>
+
+      {/* ── STATS MODAL ── */}
+      <AnimatePresence>
+        {showStats && (() => {
+          const total = links.filter(l => !l.isDeleted && !l.isArchived).length;
+          const readCount = links.filter(l => !l.isDeleted && !l.isArchived && l.isRead).length;
+          const platformStats = Object.entries(PLATFORMS).map(([k, v]) => ({ label: v.label, count: links.filter(l => !l.isDeleted && !l.isArchived && l.platform === k).length, color: v.color })).filter(p => p.count > 0);
+          const tagCounts = {}; links.filter(l => !l.isDeleted && !l.isArchived).forEach(l => l.tags.forEach(t => { tagCounts[t] = (tagCounts[t] || 0) + 1; }));
+          const topTags = Object.entries(tagCounts).sort((a,b) => b[1]-a[1]).slice(0,6);
+          const maxTag = topTags[0]?.[1] || 1;
+          return (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowStats(false)}
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+              <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} onClick={e => e.stopPropagation()}
+                style={{ background: th.bg, borderRadius: 20, padding: "2rem", width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", border: `1px solid ${th.border}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+                  <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 22, textTransform: "uppercase", color: th.text }}>Shelf Stats</span>
+                  <button onClick={() => setShowStats(false)} style={{ background: "none", border: "none", cursor: "pointer", color: th.textMuted }}><Icon name="x" size={20} /></button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 24 }}>
+                  {[{ label: "Total", val: total }, { label: "Read", val: readCount }, { label: "Unread", val: total - readCount }].map(s => (
+                    <div key={s.label} style={{ background: th.cardBg, borderRadius: 12, padding: "14px", textAlign: "center", border: `1px solid ${th.border}` }}>
+                      <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 28, color: th.text }}>{s.val}</div>
+                      <div style={{ fontSize: 11, color: th.textMuted, fontWeight: 600 }}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+                {total > 0 && <div style={{ marginBottom: 8, fontSize: 11, fontWeight: 600, color: th.textMuted }}>READ PROGRESS</div>}
+                {total > 0 && <div style={{ height: 8, background: th.borderLight, borderRadius: 99, marginBottom: 24, overflow: "hidden" }}><motion.div initial={{ width: 0 }} animate={{ width: `${Math.round((readCount/total)*100)}%` }} transition={{ duration: 0.8 }} style={{ height: "100%", background: "#27ae60", borderRadius: 99 }} /></div>}
+                {platformStats.length > 0 && <div style={{ marginBottom: 8, fontSize: 11, fontWeight: 600, color: th.textMuted }}>BY PLATFORM</div>}
+                {platformStats.map(p => <div key={p.label} style={{ marginBottom: 8 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}><span style={{ color: th.text }}>{p.label}</span><span style={{ fontWeight: 600, color: th.text }}>{p.count}</span></div><div style={{ height: 5, background: th.borderLight, borderRadius: 99 }}><motion.div initial={{ width: 0 }} animate={{ width: `${Math.round((p.count/total)*100)}%` }} transition={{ duration: 0.6 }} style={{ height: "100%", background: p.color, borderRadius: 99 }} /></div></div>)}
+                {topTags.length > 0 && <div style={{ margin: "16px 0 8px", fontSize: 11, fontWeight: 600, color: th.textMuted }}>TOP TAGS</div>}
+                {topTags.map(([tag, cnt]) => <div key={tag} style={{ marginBottom: 8 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}><span style={{ color: th.text }}>{tag}</span><span style={{ fontWeight: 600, color: th.text }}>{cnt}</span></div><div style={{ height: 5, background: th.borderLight, borderRadius: 99 }}><motion.div initial={{ width: 0 }} animate={{ width: `${Math.round((cnt/maxTag)*100)}%` }} transition={{ duration: 0.6 }} style={{ height: "100%", background: "#D4924A", borderRadius: 99 }} /></div></div>)}
+              </motion.div>
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
 
       <AnimatePresence>
@@ -718,7 +802,7 @@ export default function Linkshelf() {
   );
 }
 
-function LinkCard({ link, th, isSelecting, isSelected, onSelect, onDelete, onEdit, onWatch, onRead, onCopy, onTogglePin, onRestore, onPermDelete, isTrash }) {
+function LinkCard({ link, th, isSelecting, isSelected, onSelect, onDelete, onEdit, onWatch, onRead, onCopy, onTogglePin, onRestore, onPermDelete, onToggleRead, onArchive, onUnarchive, isTrash, isArchive }) {
   const plat = PLATFORMS[link.platform];
   const isYouTube = link.platform === "youtube";
   const ytId = isYouTube ? extractYouTubeId(link.url) : null;
@@ -744,8 +828,12 @@ function LinkCard({ link, th, isSelecting, isSelected, onSelect, onDelete, onEdi
           {plat && <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 99, background: plat.bg, color: plat.color }}>{plat.label}</span>}
           {link.tags?.map(t => <span key={t} style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 99, background: th.bg, color: th.textMuted2 }}>{t}</span>)}
         </div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: th.text, lineHeight: 1.4, flex: 1, marginTop: 4 }}>{link.title.length > 80 ? link.title.slice(0, 80) + "…" : link.title}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: th.text, lineHeight: 1.4, flex: 1 }}>{link.title.length > 80 ? link.title.slice(0, 80) + "…" : link.title}</div>
+          {link.isRead && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 99, background: "#27ae6022", color: "#27ae60", whiteSpace: "nowrap" }}>READ</span>}
+        </div>
         <div style={{ fontSize: 11, color: th.textMuted }}>{link.author}</div>
+        {link.note && <div style={{ fontSize: 11, color: th.textMuted, fontStyle: "italic", background: th.bg, borderRadius: 6, padding: "4px 8px", marginTop: 2 }}>📝 {link.note.length > 60 ? link.note.slice(0, 60) + "…" : link.note}</div>}
         
         {!isSelecting && (
           <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
@@ -763,8 +851,10 @@ function LinkCard({ link, th, isSelecting, isSelected, onSelect, onDelete, onEdi
                 ) : (
                   <a href={link.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ flex: 1, padding: "7px 0", borderRadius: 8, background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="external" size={12} /> Open</a>
                 )}
+                <button onClick={(e) => { e.stopPropagation(); onToggleRead(); }} title={link.isRead ? "Mark Unread" : "Mark Read"} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: link.isRead ? "#27ae6022" : th.cardBg, cursor: "pointer", color: link.isRead ? "#27ae60" : th.textMuted2 }}><Icon name="check" size={13} /></button>
                 <button onClick={(e) => { e.stopPropagation(); onCopy(); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="copy" size={13} /></button>
                 <button onClick={(e) => { e.stopPropagation(); onEdit(link); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="edit" size={13} /></button>
+                {isArchive ? <button onClick={(e) => { e.stopPropagation(); onUnarchive(); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="restore" size={13} /></button> : <button onClick={(e) => { e.stopPropagation(); onArchive(); }} title="Archive" style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="archive" size={13} /></button>}
                 <button onClick={(e) => { e.stopPropagation(); onDelete(link.id); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.danger }}><Icon name="trash" size={13} /></button>
               </>
             )}

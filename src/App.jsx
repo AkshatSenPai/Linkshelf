@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Readability } from "@mozilla/readability";
 import DOMPurify from "dompurify";
+import { supabase } from "./supabase";
 
 function extractYouTubeId(url) {
   const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&]{11})/);
@@ -13,6 +14,7 @@ const PLATFORMS = {
   instagram: { label: "Instagram", color: "#833ab4", bg: "#f5f0ff", match: (url) => /instagram\.com/.test(url) },
   x: { label: "X / Twitter", color: "#14171a", bg: "#f0f4f8", match: (url) => /twitter\.com|x\.com/.test(url) },
   image: { label: "Image", color: "#e67e22", bg: "#fdf2e9", match: (url) => /\.(jpeg|jpg|gif|png|webp|svg|bmp)(\?.*)?$/i.test(url) || url.startsWith('data:image/') },
+  document: { label: "Document", color: "#2980b9", bg: "#ebf5fb", match: (url) => /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv)(\?.*)?$/i.test(url) || url.includes("supabase.co") },
 };
 
 const DEFAULT_CATEGORIES = [
@@ -103,7 +105,8 @@ const Icon = ({ name, size = 16 }) => {
     cloudCheck: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path d="M9 13l2 2 4-4"/></svg>,
     stats: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
     note: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
-    archive: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+    archive: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>,
+    file: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
   };
   return icons[name] || null;
 };
@@ -142,8 +145,11 @@ export default function Linkshelf() {
   const syncTimeoutRef = useRef(null);
 
   const [toasts, setToasts] = useState([]);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef();
   const fileInputRef = useRef();
+  const docInputRef = useRef();
 
   const isDark = data.theme === "dark";
   const th = {
@@ -275,6 +281,57 @@ export default function Linkshelf() {
     a.href = url; a.download = `linkshelf_backup_${new Date().toISOString().split("T")[0]}.json`;
     a.click(); URL.revokeObjectURL(url);
     addToast("Backup exported successfully!");
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setUploadProgress(50); // Show loading state
+    
+    // Clean filename for Supabase storage
+    const cleanFileName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '');
+    const filePath = `${Date.now()}_${cleanFileName}`;
+    
+    const { error } = await supabase.storage
+      .from('Docs linkshelf')
+      .upload(filePath, file);
+      
+    if (error) {
+      console.error(error);
+      addToast("Upload failed", "error");
+      setUploadProgress(null);
+      return;
+    }
+    
+    const { data: { publicUrl } } = supabase.storage
+      .from('Docs linkshelf')
+      .getPublicUrl(filePath);
+      
+    setUploadProgress(null);
+    const platform = "document";
+    setDrawer({ url: publicUrl, platform, meta: { title: file.name, author: "My Files", thumbnail: null }, loading: false, note: "" });
+    setDrawerTags([]);
+    e.target.value = null;
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    // Only set false if we leave the main window, not child elements
+    if (e.clientY <= 0 || e.clientX <= 0 || (e.clientX >= window.innerWidth || e.clientY >= window.innerHeight)) {
+      setIsDragging(false);
+    }
+  };
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFileUpload({ target: { files: e.dataTransfer.files } });
+    }
   };
 
   const handleImport = (e) => {
@@ -467,6 +524,7 @@ export default function Linkshelf() {
 
   const tabCounts = {
     all: links.filter(l => !l.isDeleted && !l.isArchived).length,
+    document: links.filter(l => !l.isDeleted && !l.isArchived && l.platform === "document").length,
     youtube: links.filter(l => !l.isDeleted && !l.isArchived && l.platform === "youtube").length,
     instagram: links.filter(l => !l.isDeleted && !l.isArchived && l.platform === "instagram").length,
     x: links.filter(l => !l.isDeleted && !l.isArchived && l.platform === "x").length,
@@ -478,13 +536,29 @@ export default function Linkshelf() {
   const visibleCategories = [...new Set(links.filter(l => !l.isDeleted && !l.isArchived).flatMap(l => l.tags))];
 
   return (
-    <div style={{ minHeight: "100vh", background: th.bg, fontFamily: "'DM Sans', sans-serif", transition: "background 0.3s ease", paddingBottom: isSelecting ? "80px" : 0 }}>
+    <div 
+      onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
+      style={{ minHeight: "100vh", background: th.bg, fontFamily: "'DM Sans', sans-serif", transition: "background 0.3s ease", paddingBottom: isSelecting ? "80px" : 0 }}
+    >
+      <AnimatePresence>
+        {isDragging && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} 
+            style={{ position: "fixed", inset: 0, zIndex: 9999, background: isDark ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.85)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ textAlign: "center", color: th.text, border: `4px dashed ${th.textMuted}`, padding: "64px", borderRadius: 32, pointerEvents: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+              <div style={{ color: th.textMuted, opacity: 0.5 }}><Icon name="upload" size={64} /></div>
+              <h2 style={{ fontFamily: "'Anton', sans-serif", fontSize: 48, marginTop: 16, letterSpacing: 1, textTransform: "uppercase", margin: 0 }}>DROP TO UPLOAD</h2>
+              <p style={{ fontSize: 18, color: th.textMuted2, margin: 0 }}>PDFs, Docs, Spreadsheets, and Images</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <link href="https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
 
       {/* ── HEADER ── */}
       <header className="mobile-header" style={{
-        background: th.header, padding: "0 2rem", display: "flex", alignItems: "center", justifyContent: "space-between",
-        height: 64, position: "sticky", top: 0, zIndex: 100, borderBottom: `1px solid ${th.borderLight}`, transition: "background 0.3s ease"
+        background: isDark ? "rgba(17,17,17,0.75)" : "rgba(30,15,5,0.85)", padding: "0 2rem", display: "flex", alignItems: "center", justifyContent: "space-between",
+        height: 64, position: "sticky", top: 0, zIndex: 100, borderBottom: `1px solid ${th.borderLight}`, transition: "background 0.3s ease",
+        backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)"
       }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
           <span className="brand-text" style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: th.headerBrand, letterSpacing: 1, textTransform: "uppercase" }}>Linkshelf</span>
@@ -533,24 +607,33 @@ export default function Linkshelf() {
 
       {/* ── INPUT BAR ── */}
       <div className="mobile-input-area" style={{ background: th.inputArea, padding: "1.5rem 2rem", transition: "background 0.3s ease" }}>
-        <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", gap: 10 }}>
+        <div className="mobile-input-wrapper" style={{ maxWidth: 720, margin: "0 auto", display: "flex", gap: 10 }}>
           <input
             ref={inputRef} value={inputUrl} onChange={e => setInputUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && handlePaste(inputUrl)}
             placeholder="Paste a link (Cmd/Ctrl + K)…"
             style={{
-              flex: 1, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${th.inputBorder}`, background: th.inputBg,
-              color: th.inputText, fontSize: 14, outline: "none", fontFamily: "'DM Sans', sans-serif"
+              flex: 1, padding: "14px 18px", borderRadius: 12, border: `1.5px solid ${th.inputBorder}`, background: th.inputBg,
+              color: th.inputText, fontSize: 15, outline: "none", fontFamily: "'DM Sans', sans-serif"
             }} />
-          <button onClick={() => handlePaste(inputUrl)} style={{ background: "#D4924A", border: "none", borderRadius: 10, padding: "0 20px", cursor: "pointer", color: "#1E0F05", fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 6 }}>
-            <Icon name="plus" size={16} /> Add
-          </button>
+          <div className="mobile-action-buttons" style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => handlePaste(inputUrl)} style={{ background: "#D4924A", border: "none", borderRadius: 12, padding: "0 24px", cursor: "pointer", color: "#1E0F05", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 6, transition: "transform 0.1s" }} onMouseDown={e => e.currentTarget.style.transform="scale(0.96)"} onMouseUp={e => e.currentTarget.style.transform="scale(1)"} onMouseLeave={e => e.currentTarget.style.transform="scale(1)"}>
+              <Icon name="plus" size={18} /> Add
+            </button>
+            
+            <label style={{ background: th.cardBg, border: `1.5px solid ${th.border}`, borderRadius: 12, padding: "0 20px", cursor: "pointer", color: th.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 6, position: "relative", overflow: "hidden", transition: "transform 0.1s" }} onMouseDown={e => e.currentTarget.style.transform="scale(0.96)"} onMouseUp={e => e.currentTarget.style.transform="scale(1)"} onMouseLeave={e => e.currentTarget.style.transform="scale(1)"}>
+              <Icon name={uploadProgress !== null ? "loader" : "file"} size={18} /> 
+              {uploadProgress !== null ? `${Math.round(uploadProgress)}%` : "Upload"}
+              {uploadProgress !== null && <div style={{ position: "absolute", bottom: 0, left: 0, height: 3, background: "#D4924A", width: `${uploadProgress}%` }} />}
+              <input type="file" ref={docInputRef} onChange={handleFileUpload} style={{ display: "none" }} />
+            </label>
+          </div>
         </div>
       </div>
 
       {/* ── TABS ── */}
       <div className="mobile-tabs-container" style={{ background: th.bg, borderBottom: `1.5px solid ${th.border}`, padding: "0 2rem" }}>
         <div className="scroll-hide" style={{ maxWidth: 960, margin: "0 auto", display: "flex", gap: 0, overflowX: "auto" }}>
-          {[["all", "All"], ["youtube", "YouTube"], ["instagram", "Instagram"], ["x", "X / Twitter"], ["archive", "Archive"], ["trash", "Trash"]].map(([key, label]) => (
+          {[["all", "All"], ["document", "Docs"], ["youtube", "YouTube"], ["instagram", "Instagram"], ["x", "X / Twitter"], ["archive", "Archive"], ["trash", "Trash"]].map(([key, label]) => (
             <button key={key} onClick={() => { setActiveTab(key); setActiveTags([]); }}
               style={{
                 background: "none", border: "none", cursor: "pointer", padding: "14px 20px", fontSize: 13, fontWeight: 600,
@@ -567,7 +650,7 @@ export default function Linkshelf() {
       {/* ── FILTERS ── */}
       {activeTab !== "trash" && activeTab !== "archive" && (
         <div className="mobile-filters-container" style={{ maxWidth: 960, margin: "0 auto", padding: "1rem 2rem 0" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div className="mobile-filters-scroll" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ position: "relative", marginRight: 4 }}>
               <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: th.textMuted }}><Icon name="search" size={14} /></span>
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…"
@@ -586,10 +669,10 @@ export default function Linkshelf() {
             {visibleCategories.map(cat => {
               const isActive = activeTags.includes(cat);
               return (
-                <button key={cat} onClick={() => setActiveTags(p => p.includes(cat) ? p.filter(t => t !== cat) : [...p, cat])} style={{
-                  padding: "6px 14px", borderRadius: 99, fontSize: 12, fontWeight: 500, border: isActive ? `1.5px solid ${th.text}` : `1px solid ${th.border}`,
-                  background: isActive ? th.text : th.cardBg, color: isActive ? th.bg : th.textMuted2, cursor: "pointer", display: "flex", alignItems: "center", gap: 4
-                }}>
+                <button
+                  key={cat} className="topic-pill" onClick={() => setActiveTags(p => p.includes(cat) ? p.filter(t => t !== cat) : [...p, cat])}
+                  style={{ padding: "6px 14px", borderRadius: 99, border: `1px solid ${isActive ? "transparent" : th.border}`, background: isActive ? th.badgeBgActive : th.badgeBg, color: isActive ? th.badgeTextActive : th.badgeText, fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}
+                >
                   {isActive && <Icon name="check" size={10} />} {cat}
                 </button>
               );
@@ -601,10 +684,13 @@ export default function Linkshelf() {
       {/* ── GRID ── */}
       <main className="mobile-main" style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 2rem 4rem" }}>
         {processed.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "5rem 0", color: th.textMuted }}>
-            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 32, textTransform: "uppercase", color: th.emptyText, marginBottom: 8 }}>{activeTab === "trash" ? "Trash is empty" : "Empty shelf"}</div>
-            <div style={{ fontSize: 14 }}>{activeTab === "trash" ? "Deleted items appear here" : "Paste a link above to start curating"}</div>
-          </div>
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} style={{ textAlign: "center", padding: "6rem 1rem", color: th.textMuted, display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+            <div style={{ background: th.cardBg, padding: 24, borderRadius: "50%", border: `1px solid ${th.borderLight}`, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 8px 30px rgba(0,0,0,0.05)", marginBottom: 12 }}>
+              <Icon name={activeTab === "trash" ? "trash" : "archive"} size={32} />
+            </div>
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 36, textTransform: "uppercase", color: th.emptyText, letterSpacing: 1 }}>{activeTab === "trash" ? "Trash is empty" : "Empty shelf"}</div>
+            <div style={{ fontSize: 16, maxWidth: 300, lineHeight: 1.5 }}>{activeTab === "trash" ? "Deleted items will appear here." : "Paste a link above or upload a document to start curating."}</div>
+          </motion.div>
         ) : (
           <motion.div layout className="grid-container" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
             <AnimatePresence>
@@ -806,7 +892,7 @@ function LinkCard({ link, th, isSelecting, isSelected, onSelect, onDelete, onEdi
   const plat = PLATFORMS[link.platform];
   const isYouTube = link.platform === "youtube";
   const ytId = isYouTube ? extractYouTubeId(link.url) : null;
-  const showReadBtn = !["youtube", "image", "instagram", "x"].includes(link.platform);
+  const showReadBtn = !["youtube", "image", "instagram", "x", "document"].includes(link.platform);
   
   return (
     <motion.div layout initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ duration: 0.2 }}
@@ -836,26 +922,29 @@ function LinkCard({ link, th, isSelecting, isSelected, onSelect, onDelete, onEdi
         {link.note && <div style={{ fontSize: 11, color: th.textMuted, fontStyle: "italic", background: th.bg, borderRadius: 6, padding: "4px 8px", marginTop: 2 }}>📝 {link.note.length > 60 ? link.note.slice(0, 60) + "…" : link.note}</div>}
         
         {!isSelecting && (
-          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <div style={{ display: "flex", gap: 6, marginTop: "auto", paddingTop: 12, borderTop: `1px solid ${th.borderLight}` }}>
             {isTrash ? (
               <>
-                <button onClick={(e) => { e.stopPropagation(); onRestore(); }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="restore" size={12} /> Restore</button>
-                <button onClick={(e) => { e.stopPropagation(); onPermDelete(); }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: "#ffebee", color: th.danger, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="trash" size={12} /> Erase</button>
+                <button onClick={(e) => { e.stopPropagation(); onRestore(); }} style={{ flex: 1, padding: "8px 0", borderRadius: 10, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><Icon name="restore" size={14} /> Restore</button>
+                <button onClick={(e) => { e.stopPropagation(); onPermDelete(); }} style={{ flex: 1, padding: "8px 0", borderRadius: 10, border: "none", cursor: "pointer", background: "#ffebee", color: th.danger, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><Icon name="trash" size={14} /> Erase</button>
               </>
             ) : (
               <>
                 {isYouTube && ytId ? (
-                  <button onClick={(e) => { e.stopPropagation(); onWatch(ytId); }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="play" size={12} /> Watch</button>
+                  <button onClick={(e) => { e.stopPropagation(); onWatch(ytId); }} style={{ padding: "8px 16px", borderRadius: 10, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Icon name="play" size={14} /> Watch</button>
                 ) : showReadBtn ? (
-                  <button onClick={(e) => { e.stopPropagation(); onRead(link.url); }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="book" size={12} /> Read</button>
+                  <button onClick={(e) => { e.stopPropagation(); onRead(link.url); }} style={{ padding: "8px 16px", borderRadius: 10, border: "none", cursor: "pointer", background: th.btnBg, color: th.btnText, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Icon name="book" size={14} /> Read</button>
                 ) : (
-                  <a href={link.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ flex: 1, padding: "7px 0", borderRadius: 8, background: th.btnBg, color: th.btnText, fontSize: 12, fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}><Icon name="external" size={12} /> Open</a>
+                  <a href={link.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ padding: "8px 16px", borderRadius: 10, background: th.btnBg, color: th.btnText, fontSize: 13, fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: 6 }}><Icon name="external" size={14} /> Open</a>
                 )}
-                <button onClick={(e) => { e.stopPropagation(); onToggleRead(); }} title={link.isRead ? "Mark Unread" : "Mark Read"} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: link.isRead ? "#27ae6022" : th.cardBg, cursor: "pointer", color: link.isRead ? "#27ae60" : th.textMuted2 }}><Icon name="check" size={13} /></button>
-                <button onClick={(e) => { e.stopPropagation(); onCopy(); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="copy" size={13} /></button>
-                <button onClick={(e) => { e.stopPropagation(); onEdit(link); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="edit" size={13} /></button>
-                {isArchive ? <button onClick={(e) => { e.stopPropagation(); onUnarchive(); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="restore" size={13} /></button> : <button onClick={(e) => { e.stopPropagation(); onArchive(); }} title="Archive" style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.textMuted2 }}><Icon name="archive" size={13} /></button>}
-                <button onClick={(e) => { e.stopPropagation(); onDelete(link.id); }} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${th.borderLight}`, background: th.cardBg, cursor: "pointer", color: th.danger }}><Icon name="trash" size={13} /></button>
+                
+                <div style={{ display: "flex", gap: 2, marginLeft: "auto" }}>
+                  <button onClick={(e) => { e.stopPropagation(); onToggleRead(); }} title={link.isRead ? "Mark Unread" : "Mark Read"} style={{ padding: "8px", borderRadius: 8, border: "none", background: link.isRead ? "#27ae6022" : "transparent", cursor: "pointer", color: link.isRead ? "#27ae60" : th.textMuted2 }}><Icon name="check" size={15} /></button>
+                  <button onClick={(e) => { e.stopPropagation(); onCopy(); }} style={{ padding: "8px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: th.textMuted2 }}><Icon name="copy" size={15} /></button>
+                  <button onClick={(e) => { e.stopPropagation(); onEdit(link); }} style={{ padding: "8px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: th.textMuted2 }}><Icon name="edit" size={15} /></button>
+                  {isArchive ? <button onClick={(e) => { e.stopPropagation(); onUnarchive(); }} style={{ padding: "8px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: th.textMuted2 }}><Icon name="restore" size={15} /></button> : <button onClick={(e) => { e.stopPropagation(); onArchive(); }} title="Archive" style={{ padding: "8px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: th.textMuted2 }}><Icon name="archive" size={15} /></button>}
+                  <button onClick={(e) => { e.stopPropagation(); onDelete(link.id); }} style={{ padding: "8px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: th.danger }}><Icon name="trash" size={15} /></button>
+                </div>
               </>
             )}
           </div>

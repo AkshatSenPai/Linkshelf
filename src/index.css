@@ -17,6 +17,14 @@ body, html {
   -webkit-overflow-scrolling: touch;
 }
 
+.topic-pill {
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1) !important;
+}
+.topic-pill:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+}
+
 @media (max-width: 640px) {
   .mobile-header {
     padding: 0 1rem !important;
@@ -79,5 +87,32 @@ body, html {
   /* Make sure link cards don't shrink too much */
   .grid-container {
     grid-template-columns: 1fr !important;
+  }
+
+  .mobile-input-wrapper {
+    flex-direction: column !important;
+  }
+  .mobile-input-wrapper button, .mobile-input-wrapper label {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+  .mobile-action-buttons {
+    display: flex;
+    width: 100%;
+    gap: 8px;
+  }
+  .mobile-action-buttons > * {
+    flex: 1;
+  }
+
+  .mobile-filters-scroll {
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    padding-bottom: 10px !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .mobile-filters-scroll::-webkit-scrollbar {
+    display: none;
   }
 }

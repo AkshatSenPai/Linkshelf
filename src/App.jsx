@@ -349,14 +349,68 @@ export default function Linkshelf() {
   };
 
   const handleRead = async (url) => {
-    setReaderModal({ url, loading: true, title: "", html: "" });
+    // Sites that block scrapers — open directly instead of wasting time
+    const BLOCKED_DOMAINS = [
+      "twitter.com", "x.com", "reddit.com", "wsj.com", "ft.com",
+      "nytimes.com", "bloomberg.com", "economist.com", "instagram.com",
+    ];
     try {
-      const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
-      const doc = new DOMParser().parseFromString((await res.json()).contents, "text/html");
+      const hostname = new URL(url).hostname.replace("www.", "");
+      if (BLOCKED_DOMAINS.some(d => hostname.includes(d))) {
+        addToast("This site blocks reading — opening in browser.", "error");
+        window.open(url, "_blank", "noopener,noreferrer");
+        return;
+      }
+    } catch (_) {}
+
+    setReaderModal({ url, loading: true, title: "", html: "" });
+
+    const fetchWithTimeout = (fetchUrl, ms = 9000) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ms);
+      return fetch(fetchUrl, { signal: controller.signal }).finally(() => clearTimeout(timer));
+    };
+
+    const proxies = [
+      { url: `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, json: true },
+      { url: `https://corsproxy.io/?url=${encodeURIComponent(url)}`, json: false },
+      { url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, json: false },
+    ];
+
+    let html = null;
+    for (const proxy of proxies) {
+      try {
+        const res = await fetchWithTimeout(proxy.url);
+        if (!res.ok) continue;
+        const text = proxy.json ? (await res.json()).contents : await res.text();
+        if (text && text.length > 200) { html = text; break; }
+      } catch (_) { /* try next */ }
+    }
+
+    if (!html) {
+      setReaderModal(null);
+      addToast("Can't fetch — opening in browser instead.", "error");
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    try {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const base = doc.createElement("base");
+      base.href = url;
+      doc.head.prepend(base);
       const article = new Readability(doc).parse();
-      if (article && article.content) setReaderModal({ url, loading: false, title: article.title, html: DOMPurify.sanitize(article.content) });
-      else { addToast("Failed to parse article text.", "error"); setReaderModal(null); }
-    } catch (e) { addToast("Network error blocked reading.", "error"); setReaderModal(null); }
+      if (article && article.content) {
+        setReaderModal({ url, loading: false, title: article.title, html: DOMPurify.sanitize(article.content) });
+      } else {
+        setReaderModal(null);
+        addToast("Couldn't extract text — opening in browser.", "error");
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    } catch (e) {
+      setReaderModal(null);
+      addToast("Failed to parse article.", "error");
+    }
   };
 
   let processed = links.filter(l => {
@@ -668,7 +722,7 @@ function LinkCard({ link, th, isSelecting, isSelected, onSelect, onDelete, onEdi
   const plat = PLATFORMS[link.platform];
   const isYouTube = link.platform === "youtube";
   const ytId = isYouTube ? extractYouTubeId(link.url) : null;
-  const showReadBtn = !["youtube", "image", "instagram"].includes(link.platform);
+  const showReadBtn = !["youtube", "image", "instagram", "x"].includes(link.platform);
   
   return (
     <motion.div layout initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ duration: 0.2 }}
